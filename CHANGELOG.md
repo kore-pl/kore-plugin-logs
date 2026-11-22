@@ -5,6 +5,17 @@ All notable changes to this project are documented in this file.
 The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.1.0/),
 and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0.html).
 
+## [Unreleased]
+
+### Added
+
+- 统一插件配置契约（`logs.config.get` / `logs.config.set`）：界面可配日志来源、保存即生效、无需重启；
+  字段类型 `list(item=string)`，每项 `名称=绝对路径` 或 `名称=journal`。
+- 配置存储 `<KORE_STATE_DIR>/config.json`（0600，原子写），优先级 `config.json` > `KORE_LOGS_SOURCES` > 默认值；
+  老用户环境变量继续兼容。
+- 通用 `internal/plugincfg`：schema 校验、0600 原子存储、sensitive 字段 `***` 掩码；日志来源列表复用
+  `logic.ValidateSources`，写盘前与启动加载同一套校验。
+
 ## [0.2.0] - 2026-11-22
 
 ### Added

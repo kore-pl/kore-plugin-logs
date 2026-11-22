@@ -55,13 +55,22 @@ func ParseSources(raw string) ([]SourceSpec, error) {
 	if err := decoder.Decode(&trailing); !errors.Is(err, io.EOF) {
 		return nil, errors.New("KORE_LOGS_SOURCES 在 JSON 数组之后存在多余内容")
 	}
+	if err := ValidateSources(specs); err != nil {
+		return nil, err
+	}
+	return specs, nil
+}
+
+// ValidateSources 校验一组已构造的来源配置；配置契约在写盘前复用同一套规则，
+// 保证「环境变量解析」与「界面保存」不会出现两套校验口径。
+func ValidateSources(specs []SourceSpec) error {
 	seen := make(map[string]bool, len(specs))
 	for i, spec := range specs {
 		if err := validateSourceSpec(i, spec, seen); err != nil {
-			return nil, err
+			return err
 		}
 	}
-	return specs, nil
+	return nil
 }
 
 // validateSourceSpec 校验单条来源配置，错误信息带下标便于定位。

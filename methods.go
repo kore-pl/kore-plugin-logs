@@ -9,6 +9,7 @@ import (
 	"time"
 
 	"github.com/pengtang1024/kore-plugin-logs/internal/logic"
+	"github.com/pengtang1024/kore-plugin-logs/internal/plugincfg"
 	"github.com/pengtang1024/kore/pkg/pluginapi"
 )
 
@@ -21,7 +22,7 @@ type statusResult struct {
 }
 
 // dispatch 把请求分发为响应帧；第二个返回值表示收到 kore.shutdown。
-func dispatch(request *pluginapi.Request, cfg config, logger *slog.Logger) (*pluginapi.Response, bool) {
+func dispatch(request *pluginapi.Request, cfg *config, logger *slog.Logger) (*pluginapi.Response, bool) {
 	response := &pluginapi.Response{Type: pluginapi.TypeResponse, ID: request.ID, ReqID: request.ReqID}
 	switch request.Method {
 	case "kore.shutdown":
@@ -29,10 +30,26 @@ func dispatch(request *pluginapi.Request, cfg config, logger *slog.Logger) (*plu
 		logger.Info("收到 kore.shutdown，优雅退出")
 		return response, true
 	case "kore.ping":
-		response.Result = pingResult(cfg)
+		response.Result = pingResult(*cfg)
 		return response, false
 	case "kore.reload":
 		response.Result = json.RawMessage(`{"ok":true,"config_digest":""}`)
+		return response, false
+	case cfg.id + ".config.get", "config.get":
+		result, perr := handleConfigGet(cfg)
+		if perr != nil {
+			response.Error = perr
+			return response, false
+		}
+		response.Result = result
+		return response, false
+	case cfg.id + ".config.set", "config.set":
+		result, perr := handleConfigSet(request.Params, cfg)
+		if perr != nil {
+			response.Error = perr
+			return response, false
+		}
+		response.Result = result
 		return response, false
 	}
 	verb, ok := businessVerb(request.Method, cfg.id)
@@ -52,7 +69,7 @@ func dispatch(request *pluginapi.Request, cfg config, logger *slog.Logger) (*plu
 
 // handleLogsVerb 执行 logs 方法：返回结构化结果 JSON 或协议错误体。
 // logic 层的 FaultError 在此统一映射为 pluginapi.Error。
-func handleLogsVerb(verb string, params json.RawMessage, cfg config, logger *slog.Logger) (json.RawMessage, *pluginapi.Error) {
+func handleLogsVerb(verb string, params json.RawMessage, cfg *config, logger *slog.Logger) (json.RawMessage, *pluginapi.Error) {
 	f := logic.ParseFault(cfg.fault)
 	registry := cfg.registry
 	if registry == nil {
@@ -184,6 +201,58 @@ func encodeResult(v any, method string) (json.RawMessage, *pluginapi.Error) {
 		return nil, internalErr("序列化 " + method + " 结果失败: " + err.Error())
 	}
 	return b, nil
+}
+
+// handleConfigGet 返回表单 schema、当前值与来源；敏感字段经 plugincfg 掩码后不回传原值。
+func handleConfigGet(cfg *config) (json.RawMessage, *pluginapi.Error) {
+	schema := logSourcesSchema()
+	values, err := json.Marshal(cfg.values)
+	if err != nil {
+		return nil, internalErr("序列化配置值失败: " + err.Error())
+	}
+	masked, err := plugincfg.MaskValues(schema, values)
+	if err != nil {
+		return nil, internalErr("掩码配置值失败: " + err.Error())
+	}
+	return encodeResult(plugincfg.GetResult{Schema: schema, Values: masked, Source: cfg.source}, "logs.config.get")
+}
+
+// handleConfigSet 执行「校验 → 原子写 → 更新内存」：写盘成功后才替换 registry，
+// 保证失败时旧配置继续可用，且下一次 logs.* 调用立即使用新来源（无需重启）。
+func handleConfigSet(params json.RawMessage, cfg *config) (json.RawMessage, *pluginapi.Error) {
+	var p plugincfg.SetParams
+	if perr := decodeObject(params, &p); perr != nil {
+		return nil, perr
+	}
+	if len(p.Values) == 0 || string(p.Values) == "null" {
+		return nil, invalidParam("values 必须是 JSON 对象")
+	}
+	if p.Values[0] != '{' {
+		return nil, invalidParam("values 必须是 JSON 对象")
+	}
+	merged := cfg.values
+	if err := strictDecode(p.Values, &merged); err != nil {
+		return nil, invalidParam("配置值非法: " + err.Error())
+	}
+	specs, err := parseSourceList(merged.Sources)
+	if err != nil {
+		return nil, invalidParam("日志来源非法: " + err.Error())
+	}
+	if cfg.store == nil || cfg.store.Path() == "" {
+		return nil, internalErr("KORE_STATE_DIR 未设置，无法保存插件配置")
+	}
+	raw, err := json.Marshal(merged)
+	if err != nil {
+		return nil, internalErr("序列化配置值失败: " + err.Error())
+	}
+	if err := cfg.store.Write(raw); err != nil {
+		return nil, internalErr("保存插件配置失败: " + err.Error())
+	}
+	cfg.values = merged
+	cfg.registry = logic.NewRegistry(specs)
+	cfg.source = plugincfg.SourceFile
+	return encodeResult(plugincfg.SetResult{Saved: true, Applied: true, RestartRequired: false, Warnings: []string{}},
+		"logs.config.set")
 }
 
 // businessVerb 把 <id>.<verb> 或裸 <verb> 归一为动词名。
