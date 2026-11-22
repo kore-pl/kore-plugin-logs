@@ -28,7 +28,7 @@ func serve(conn net.Conn, cfg config, logger *slog.Logger) error {
 			logger.Debug("忽略非 request 帧")
 			continue
 		}
-		response, shutdown := dispatch(request, cfg)
+		response, shutdown := dispatch(request, cfg, logger)
 		if err := pluginapi.WriteJSON(conn, response); err != nil {
 			if shutdown {
 				return nil

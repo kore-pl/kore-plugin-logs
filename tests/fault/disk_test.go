@@ -13,7 +13,8 @@ import (
 // TestFaultDiskFull 验证磁盘满故障返回 E_INTERNAL，并真实写 /dev/full
 // 确认 ENOSPC 语义（若系统无 /dev/full 则跳过该真实探测，方法级断言仍执行）。
 func TestFaultDiskFull(t *testing.T) {
-	result, ferr := logic.List(logic.FaultDiskFull)
+	registry := logic.NewRegistry(nil)
+	result, ferr := registry.Sources(logic.FaultDiskFull)
 	if result != nil {
 		t.Fatalf("disk-full 故障下不应有结果，实际=%+v", result)
 	}
@@ -21,7 +22,7 @@ func TestFaultDiskFull(t *testing.T) {
 		t.Fatalf("ferr=%v，期望 E_INTERNAL/ENOSPC", ferr)
 	}
 
-	_, ferr = logic.Query(logic.QueryRequest{Source: logic.SourceAll, Fault: logic.FaultDiskFull})
+	_, ferr = registry.Tail(logic.TailRequest{Source: "system", Fault: logic.FaultDiskFull})
 	if ferr == nil || ferr.Code != "E_INTERNAL" {
 		t.Fatalf("query disk-full ferr=%v，期望 E_INTERNAL", ferr)
 	}

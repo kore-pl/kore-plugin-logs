@@ -5,6 +5,29 @@ All notable changes to this project are documented in this file.
 The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.1.0/),
 and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0.html).
 
+## [0.2.0] - 2026-11-22
+
+### Added
+
+- 真实日志读取：`logs.sources` / `logs.tail` / `logs.search` / `logs.stats` 四个方法落地，移除骨架样例。
+- 来源白名单：仅接受 `KORE_LOGS_SOURCES` 登记的 `name`（`file` / `journal`），启动时校验；请求不携带路径。
+- 安全校验：配置路径必须 Clean 绝对路径；装载时固定父目录真实路径，读取时复核；最终文件禁符号链接；打开后 `os.SameFile` 防替换。
+- `logs.tail`：从文件尾按 64 KiB 反向扫描行边界，凑够 N 行即停（1–2000，默认 100），
+  支持大小写不敏感 `keyword` 与 RFC3339 `since` 行首时间戳过滤；单次扫描上限 64 MiB。
+- `logs.search`：正向 64 KiB 分块扫描，返回真实行号、命中内容、`scanned_bytes` 与 `truncated`；
+  达到 `limit`（默认 100，上限 1000）或 64 MiB 即停。
+- `logs.stats`：大小、修改时间、可读性与行数；>64 MiB 文件跳过行数统计（`lines=null`）。
+- 单行上限 8 KiB：超长行截断并标记（`truncated` / `line_truncated`）。
+- journal 来源：经 `journalctl --output=short-iso` 读取，`--grep` + `--case-sensitive=no` 预过滤。
+- 路径脱敏：响应只给 `name + 文件名`，宿主绝对路径仅写 DEBUG 日志。
+- 单元测试覆盖 1 万行 tail、keyword/since、行号、空/缺失文件、超长行、未登记来源、
+  符号链接与目录替换攻击、100 MiB 稀疏文件 tail 200（断言耗时与 `scanned_bytes`）。
+- `tests/e2e/` 真实二进制 + UDS 端到端（sources/tail/search/stats + 未登记来源拒绝）。
+
+### Changed
+
+- 方法面由骨架期 `logs.list` / `logs.query` 替换为上述四个真实方法；`tests/fault/` 的入口同步到新 API（四类故障断言不变）。
+
 ## [0.1.0] - 2026-11-22
 
 ### Added

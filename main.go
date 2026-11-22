@@ -1,6 +1,6 @@
-// Package main 是 kore 的 logs 插件：日志查看分析（按来源分流 + 关键字过滤）。
+// Package main 是 kore 的 logs 插件：真实日志读取（来源白名单 + 尾部读取 + 分块搜索 + 统计）。
 //
-// 骨架口径：方法只操作内存固定样例条目，绝不读取宿主日志文件、不内置二进制。
+// 来源只认 KORE_LOGS_SOURCES 登记的 name（file / journal），不接受外部路径；
 // 协议面（kore.plugin.v1）：连接 UDS → kore.hello 握手 → 会话循环读 request、
 // 按 method 分发并回 response；stdout 留给协议，日志一律写 stderr。
 package main

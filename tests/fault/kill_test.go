@@ -11,10 +11,11 @@ import (
 	"github.com/pengtang1024/kore-plugin-logs/internal/logic"
 )
 
-// TestFaultKill 验证 kill -9 故障下 logs.list / logs.query 返回 E_UPSTREAM，
+// TestFaultKill 验证 kill -9 故障下 logs.sources / logs.tail 返回 E_UPSTREAM，
 // 并真实 kill -9 一个子进程确认 SIGKILL 语义（不是空断言刷 gate）。
 func TestFaultKill(t *testing.T) {
-	result, ferr := logic.List(logic.FaultKill)
+	registry := logic.NewRegistry(nil)
+	result, ferr := registry.Sources(logic.FaultKill)
 	if result != nil {
 		t.Fatalf("kill 故障下不应有结果，实际=%+v", result)
 	}
@@ -22,7 +23,7 @@ func TestFaultKill(t *testing.T) {
 		t.Fatalf("ferr=%v，期望 E_UPSTREAM/kill", ferr)
 	}
 
-	_, ferr = logic.Query(logic.QueryRequest{Source: logic.SourceAll, Fault: logic.FaultKill})
+	_, ferr = registry.Tail(logic.TailRequest{Source: "system", Fault: logic.FaultKill})
 	if ferr == nil || ferr.Code != "E_UPSTREAM" {
 		t.Fatalf("query kill ferr=%v，期望 E_UPSTREAM", ferr)
 	}

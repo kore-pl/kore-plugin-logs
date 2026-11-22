@@ -1,19 +1,145 @@
-// Package logic 实现 logs 插件的方法级业务逻辑：按来源分流 + 关键字过滤。
+// Package logic 实现 logs 插件的方法级业务逻辑：来源白名单、文件尾部读取、
+// 全文件分块搜索、统计与 systemd journal 读取。
 //
-// 骨架口径：本包只操作内存中的固定样例条目，绝不读取宿主日志文件、
-// 不打开任何文件路径；真实日志源接入属于后续版本，不在本仓范围。
+// 安全口径：所有读取只按配置登记（KORE_LOGS_SOURCES）的来源名解析，不接受外部路径；
+// 路径必须是 Clean 后的绝对路径，父目录在装载时固定解析结果、读取时重新校验，
+// 最终文件不得是符号链接。单次扫描上限 64 MiB，单行上限 8 KiB，不整文件读入内存。
 package logic
 
-// Source 是日志来源的显式枚举，不用 object/any 逃逸（G-24）。
-type Source string
+import "time"
+
+// SourceType 是来源类型：常规日志文件或 systemd journal。
+type SourceType string
 
 const (
-	SourceAll    Source = "all"
-	SourceSystem Source = "system"
-	SourceKernel Source = "kernel"
-	SourceApp    Source = "app"
-	SourceAccess Source = "access"
-	SourceError  Source = "error"
+	SourceTypeFile    SourceType = "file"
+	SourceTypeJournal SourceType = "journal"
+)
+
+// SourceSpec 是配置登记的一条日志来源（KORE_LOGS_SOURCES 数组元素）。
+type SourceSpec struct {
+	Name string     `json:"name"`
+	Path string     `json:"path"`
+	Type SourceType `json:"type"`
+}
+
+// SourceStatus 是 logs.sources 返回的单条探测结果；只含 name + 文件名，不含宿主绝对路径。
+type SourceStatus struct {
+	Name       string     `json:"name"`
+	File       string     `json:"file"`
+	Type       SourceType `json:"type"`
+	Exists     bool       `json:"exists"`
+	Readable   bool       `json:"readable"`
+	SizeBytes  int64      `json:"size_bytes"`
+	ModifiedAt string     `json:"modified_at,omitempty"`
+	Note       string     `json:"note,omitempty"`
+}
+
+// SourcesResult 是 logs.sources 的结构化结果。
+type SourcesResult struct {
+	Sources []SourceStatus `json:"sources"`
+	Count   int            `json:"count"`
+}
+
+// Debugf 是可选调试日志钩子（完整路径只写 DEBUG 日志，不进响应）。
+type Debugf func(format string, args ...any)
+
+// TailRequest 是 logs.tail 的显式入参。Fault/Debugf 只由运行期注入。
+type TailRequest struct {
+	Source  string `json:"source"`
+	Lines   int    `json:"lines"`
+	Keyword string `json:"keyword"`
+	Since   string `json:"since"`
+	Fault   Fault  `json:"-"`
+	Debugf  Debugf `json:"-"`
+}
+
+// TailLine 是尾部读取的单行；超 8 KiB 的行截断并置 Truncated。
+type TailLine struct {
+	Text      string `json:"text"`
+	Truncated bool   `json:"truncated"`
+}
+
+// TailResult 是 logs.tail 的结构化结果。
+type TailResult struct {
+	Source        string     `json:"source"`
+	File          string     `json:"file"`
+	Requested     int        `json:"requested"`
+	Count         int        `json:"count"`
+	Entries       []TailLine `json:"entries"`
+	Keyword       string     `json:"keyword,omitempty"`
+	Since         string     `json:"since,omitempty"`
+	ScannedBytes  int64      `json:"scanned_bytes"`
+	Truncated     bool       `json:"truncated"`
+	LineTruncated bool       `json:"line_truncated"`
+}
+
+// SearchRequest 是 logs.search 的显式入参。
+type SearchRequest struct {
+	Source  string `json:"source"`
+	Keyword string `json:"keyword"`
+	Limit   int    `json:"limit"`
+	Fault   Fault  `json:"-"`
+	Debugf  Debugf `json:"-"`
+}
+
+// SearchMatch 是一条命中：LineNo 为 1 起行号，Text 为行内容（超长截断）。
+type SearchMatch struct {
+	LineNo    int    `json:"line_no"`
+	Text      string `json:"text"`
+	Truncated bool   `json:"truncated"`
+}
+
+// SearchResult 是 logs.search 的结构化结果。
+type SearchResult struct {
+	Source       string        `json:"source"`
+	File         string        `json:"file"`
+	Keyword      string        `json:"keyword"`
+	Limit        int           `json:"limit"`
+	Count        int           `json:"count"`
+	Matches      []SearchMatch `json:"matches"`
+	ScannedBytes int64         `json:"scanned_bytes"`
+	Truncated    bool          `json:"truncated"`
+	Note         string        `json:"note,omitempty"`
+}
+
+// StatsRequest 是 logs.stats 的显式入参。
+type StatsRequest struct {
+	Source string `json:"source"`
+	Fault  Fault  `json:"-"`
+	Debugf Debugf `json:"-"`
+}
+
+// StatsResult 是 logs.stats 的结构化结果；Lines 为 nil 表示未统计（JSON null）。
+// Path 是展示用路径（"<source>/<文件名>"），宿主绝对路径只写 DEBUG 日志。
+type StatsResult struct {
+	Name       string     `json:"name"`
+	File       string     `json:"file"`
+	Path       string     `json:"path"`
+	Type       SourceType `json:"type"`
+	SizeBytes  int64      `json:"size_bytes"`
+	Lines      *int64     `json:"lines"`
+	ModifiedAt string     `json:"modified_at,omitempty"`
+	Readable   bool       `json:"readable"`
+	Note       string     `json:"note,omitempty"`
+}
+
+// 方法级上限与默认值。
+const (
+	DefaultTailLines   = 100
+	MaxTailLines       = 2000
+	DefaultSearchLimit = 100
+	MaxSearchLimit     = 1000
+	MaxKeywordLen      = 256
+
+	// MaxScanBytes 是单次 tail/search 反向或正向扫描的硬上限（64 MiB）。
+	MaxScanBytes int64 = 64 << 20
+	// StatsLineCountMaxBytes 是 stats 统计行数的文件大小上限（64 MiB）。
+	StatsLineCountMaxBytes int64 = 64 << 20
+	// ReadBlockSize 是分块读取的块大小（64 KiB）。
+	ReadBlockSize = 64 << 10
+	// MaxLineBytes 是单行内容上限（8 KiB），超出截断并标记。
+	MaxLineBytes = 8 << 10
 )
 
 // Fault 是故障注入模式，取环境变量 KORE_FAULT；空值表示不注入。
@@ -27,7 +153,7 @@ const (
 	FaultCgroup   Fault = "cgroup-oom" // cgroup memory.max 超限 OOM
 )
 
-// FaultError 是故障下的结构化方法级错误，由主包映射为 pluginapi.Error。
+// FaultError 是故障/业务错误的统一载体，由主包映射为 pluginapi.Error。
 type FaultError struct {
 	Code    string `json:"code"`
 	Message string `json:"message"`
@@ -35,48 +161,73 @@ type FaultError struct {
 
 func (e *FaultError) Error() string { return e.Code + ": " + e.Message }
 
-// SourceInfo 是 logs.list 返回的单一来源概况。
-type SourceInfo struct {
-	Source Source `json:"source"`
-	Count  int    `json:"count"`
+// 协议错误码（与 pluginapi.E_* 一一对应，避免 logic 反向依赖主包）。
+const (
+	CodeInvalid     = "E_INVALID"
+	CodeNotFound    = "E_NOTFOUND"
+	CodeInternal    = "E_INTERNAL"
+	CodeUnsupported = "E_UNSUPPORTED"
+	CodeUpstream    = "E_UPSTREAM"
+)
+
+// methodErr 构造统一的结构化方法错误。
+func methodErr(code, msg string) *FaultError {
+	return &FaultError{Code: code, Message: msg}
 }
 
-// ListResult 是 logs.list 的结构化结果。
-type ListResult struct {
-	Sources []SourceInfo `json:"sources"`
-	Count   int          `json:"count"`
-	Note    string       `json:"note"`
+// effectiveTailLines 校验 lines：0 取默认 100，合法区间 1..2000。
+func effectiveTailLines(lines int) (int, *FaultError) {
+	if lines == 0 {
+		return DefaultTailLines, nil
+	}
+	if lines < 1 || lines > MaxTailLines {
+		return 0, methodErr(CodeInvalid, "lines 必须在 1 到 2000 之间")
+	}
+	return lines, nil
 }
 
-// LogEntry 是单条样例日志（骨架口径，不来自宿主文件）。
-type LogEntry struct {
-	Source  Source `json:"source"`
-	Time    string `json:"time"`
-	Level   string `json:"level"`
-	Message string `json:"message"`
+// effectiveSearchLimit 校验 limit：0 取默认 100，合法区间 1..1000。
+func effectiveSearchLimit(limit int) (int, *FaultError) {
+	if limit == 0 {
+		return DefaultSearchLimit, nil
+	}
+	if limit < 1 || limit > MaxSearchLimit {
+		return 0, methodErr(CodeInvalid, "limit 必须在 1 到 1000 之间")
+	}
+	return limit, nil
 }
 
-// QueryRequest 是 logs.query 的显式入参。Fault 不来自外部 JSON，
-// 仅由运行期环境变量注入，故 json 标签为 "-"。
-type QueryRequest struct {
-	Source  Source `json:"source"`
-	Keyword string `json:"keyword"`
-	Limit   int    `json:"limit"`
-	Fault   Fault  `json:"-"`
+// checkSourceParam 校验 source 名称非空。
+func checkSourceParam(source string) *FaultError {
+	if source == "" {
+		return methodErr(CodeInvalid, "source 必填")
+	}
+	return nil
 }
 
-// QueryResult 是 logs.query 的结构化结果。
-type QueryResult struct {
-	Source    Source     `json:"source"`
-	Keyword   string     `json:"keyword"`
-	Limit     int        `json:"limit"`
-	Count     int        `json:"count"`
-	Truncated bool       `json:"truncated"`
-	Entries   []LogEntry `json:"entries"`
+// checkKeywordLen 校验 keyword 长度上限。
+func checkKeywordLen(keyword string) *FaultError {
+	if len(keyword) > MaxKeywordLen {
+		return methodErr(CodeInvalid, "keyword 超过 256 字节上限")
+	}
+	return nil
 }
 
-// DefaultLimit 是 limit 未指定（0）时的默认值。
-const DefaultLimit = 100
+// parseSince 校验 RFC3339 时间；空串返回 (零值,false,nil)。
+func parseSince(raw string) (time.Time, bool, *FaultError) {
+	if raw == "" {
+		return time.Time{}, false, nil
+	}
+	ts, err := time.Parse(time.RFC3339Nano, raw)
+	if err != nil {
+		return time.Time{}, false, methodErr(CodeInvalid, "since 必须是 RFC3339 时间，例如 2026-11-22T10:00:00Z")
+	}
+	return ts, true, nil
+}
 
-// MaxLimit 是 limit 硬上限，防止一次查询返回过多条目造成 DoS。
-const MaxLimit = 1000
+// debugf 在钩子存在时输出调试日志。
+func debugf(hook Debugf, format string, args ...any) {
+	if hook != nil {
+		hook(format, args...)
+	}
+}

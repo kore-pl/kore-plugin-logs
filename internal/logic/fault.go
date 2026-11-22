@@ -8,15 +8,15 @@ func checkFault(f Fault) *FaultError {
 	case FaultNone:
 		return nil
 	case FaultKill:
-		return &FaultError{Code: "E_UPSTREAM", Message: "进程被 kill -9 终止，方法无响应"}
+		return methodErr(CodeUpstream, "进程被 kill -9 终止，方法无响应")
 	case FaultTimeout:
-		return &FaultError{Code: "E_UPSTREAM", Message: "方法执行超时（timeout）"}
+		return methodErr(CodeUpstream, "方法执行超时（timeout）")
 	case FaultDiskFull:
-		return &FaultError{Code: "E_INTERNAL", Message: "磁盘满（ENOSPC），无法写入日志缓冲"}
+		return methodErr(CodeInternal, "磁盘满（ENOSPC），无法写入日志缓冲")
 	case FaultCgroup:
-		return &FaultError{Code: "E_INTERNAL", Message: "cgroup memory.max 超限，进程被 OOM killer 终止"}
+		return methodErr(CodeInternal, "cgroup memory.max 超限，进程被 OOM killer 终止")
 	default:
-		return &FaultError{Code: "E_INVALID", Message: "未知故障注入模式：" + string(f)}
+		return methodErr(CodeInvalid, "未知故障注入模式："+string(f))
 	}
 }
 

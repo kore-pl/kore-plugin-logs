@@ -27,7 +27,8 @@ func cgroupMemoryMaxPath() string {
 // TestFaultCgroup 验证 cgroup memory.max 超限故障返回 E_INTERNAL，并只读
 // 探测本进程 cgroup v2 memory.max（Tier B 无该文件时仍以方法级断言为准）。
 func TestFaultCgroup(t *testing.T) {
-	result, ferr := logic.List(logic.FaultCgroup)
+	registry := logic.NewRegistry(nil)
+	result, ferr := registry.Sources(logic.FaultCgroup)
 	if result != nil {
 		t.Fatalf("cgroup 故障下不应有结果，实际=%+v", result)
 	}
@@ -35,7 +36,7 @@ func TestFaultCgroup(t *testing.T) {
 		t.Fatalf("ferr=%v，期望 E_INTERNAL/cgroup", ferr)
 	}
 
-	_, ferr = logic.Query(logic.QueryRequest{Source: logic.SourceAll, Fault: logic.FaultCgroup})
+	_, ferr = registry.Tail(logic.TailRequest{Source: "system", Fault: logic.FaultCgroup})
 	if ferr == nil || ferr.Code != "E_INTERNAL" {
 		t.Fatalf("query cgroup ferr=%v，期望 E_INTERNAL", ferr)
 	}

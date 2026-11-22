@@ -7,6 +7,7 @@ import (
 	"os"
 	"time"
 
+	"github.com/pengtang1024/kore-plugin-logs/internal/logic"
 	"github.com/pengtang1024/kore/pkg/pluginapi"
 )
 
@@ -34,6 +35,7 @@ type config struct {
 	capabilities []string
 	startedAt    time.Time
 	fault        string
+	registry     *logic.Registry
 }
 
 // loadConfig 读取协议环境变量并解析内嵌 info.json。
@@ -45,6 +47,11 @@ func loadConfig() (config, error) {
 	if m.Protocol != pluginapi.Protocol {
 		return config{}, fmt.Errorf("info.json.protocol=%q 与 SDK 协议 %q 不一致", m.Protocol, pluginapi.Protocol)
 	}
+	sourcesRaw := os.Getenv("KORE_LOGS_SOURCES")
+	specs, err := logic.ParseSources(sourcesRaw)
+	if err != nil {
+		return config{}, err
+	}
 	cfg := config{
 		socket:       os.Getenv("KORE_PLUGIN_SOCK"),
 		id:           os.Getenv("KORE_PLUGIN_ID"),
@@ -54,6 +61,7 @@ func loadConfig() (config, error) {
 		capabilities: m.Capabilities,
 		startedAt:    time.Now(),
 		fault:        os.Getenv("KORE_FAULT"),
+		registry:     logic.NewRegistry(specs),
 	}
 	if cfg.id == "" {
 		cfg.id = m.ID

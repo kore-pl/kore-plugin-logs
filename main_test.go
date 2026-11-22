@@ -9,6 +9,7 @@ import (
 	"testing"
 	"time"
 
+	"github.com/pengtang1024/kore-plugin-logs/internal/logic"
 	"github.com/pengtang1024/kore/pkg/pluginapi"
 )
 
@@ -18,6 +19,7 @@ func testConfig() config {
 		requiresKore: ">=0.1.0 <0.2.0",
 		capabilities: []string{"system:read"},
 		startedAt:    time.Now(),
+		registry:     logic.NewRegistry(nil),
 	}
 }
 
