@@ -5,7 +5,11 @@ All notable changes to this project are documented in this file.
 The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.1.0/),
 and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0.html).
 
-## [Unreleased]
+## [0.2.1] - 2026-11-23
+
+- build: 位级可复现打包（stage chmod + tar --mode 归一、size_bytes 收敛），二进制改嵌 manifest.json，消除同版本 sha 漂移
+
+## [0.2.0] - 2026-11-22
 
 ### Added
 
@@ -15,10 +19,6 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
   老用户环境变量继续兼容。
 - 通用 `internal/plugincfg`：schema 校验、0600 原子存储、sensitive 字段 `***` 掩码；日志来源列表复用
   `logic.ValidateSources`，写盘前与启动加载同一套校验。
-
-## [0.2.0] - 2026-11-22
-
-### Added
 
 - 真实日志读取：`logs.sources` / `logs.tail` / `logs.search` / `logs.stats` 四个方法落地，移除骨架样例。
 - 来源白名单：仅接受 `KORE_LOGS_SOURCES` 登记的 `name`（`file` / `journal`），启动时校验；请求不携带路径。
