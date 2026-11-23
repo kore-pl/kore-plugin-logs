@@ -1,7 +1,7 @@
 # kore-plugin-logs
 
 kore 日志查看分析插件（M5 批1 · 生产级）：真实读取日志文件与 systemd journal，
-支持来源白名单、尾部读取、全文件分块搜索与统计。
+支持来源白名单、尾部读取、全文件分块搜索、统计、分块下载、带游标的增量跟踪与切割。
 
 ## 定位
 
@@ -11,7 +11,10 @@ kore 日志查看分析插件（M5 批1 · 生产级）：真实读取日志文�
 - **来源白名单**：只接受 `KORE_LOGS_SOURCES` 中登记的 `name`，请求永不携带路径。
 - **协议**：`kore.plugin.v1`，连接内核注入的 UDS，`kore.hello` 握手后进入会话循环；
   stdout 留给协议帧，日志写 stderr。
-- **能力**：`system:read`（只读）；`lifecycle=lazy`；`depth_level=production`。
+- **能力**：插件级 `system:read`；`method_capabilities` 按方法细化——只读方法
+  （`sources` / `tail` / `search` / `stats` / `follow` / `download` / `config.get`）为
+  `system:read`，写方法（`rotate` / `config.set`）为 `system:admin`；`lifecycle=lazy`；
+  `depth_level=production`。
 
 ## 配置来源
 
@@ -39,9 +42,12 @@ kore 日志查看分析插件（M5 批1 · 生产级）：真实读取日志文�
 | 方法 | 入参 | 结果要点 |
 | --- | --- | --- |
 | `logs.sources` | 无 | `sources[{name,file,type,exists,readable,size_bytes,modified_at,note}]`、`count`；**不含宿主绝对路径** |
-| `logs.tail` | `source`、`lines`（默认 100，1–2000）、`keyword?`、`since?`（RFC3339） | `entries[{text,truncated}]`（旧→新）、`count`、`scanned_bytes`、`truncated`、`line_truncated`、`file` |
-| `logs.search` | `source`、`keyword`（必填，≤256 字节）、`limit`（默认 100，1–1000） | `matches[{line_no,text,truncated}]`、`scanned_bytes`、`truncated` |
+| `logs.tail` | `source`、`lines`（默认 100，1–500）、`keyword?`、`since?`（RFC3339）、`position?` | `entries[{text,time,level,truncated}]`（旧→新）、`count`、`position`、`scanned_bytes`、`truncated`、`line_truncated`、`file` |
+| `logs.search` | `source`、`query`（必填，≤256 字节；`keyword` 兼容）、`limit`（默认 100，1–1000） | `matches[{line_no,text,time,level,truncated}]`、`total`、`scanned_bytes`、`truncated` |
 | `logs.stats` | `source` | `path`（`来源名/文件名`）、`size_bytes`、`lines`（>64 MiB 为 `null`）、`modified_at`、`readable`、`note` |
+| `logs.download` | `source?` / `lines?`（默认 1000，1–10000）/ `from_line?` + `to_line?`（行区间）；或 `id` + `offset?` + `limit?`（默认 1 MiB，≤4 MiB） | `path` / `filename` / `id` / `size_bytes` / `lines` / `data_base64`、`offset` / `next_offset` / `eof` / `chunk_bytes` / `max_chunk_bytes`、`truncated` |
+| `logs.follow` | `source`、`cursor?`、`max_lines?`（默认 200，1–500）、`max_bytes?`（默认 1 MiB，≤4 MiB）、`keyword?` | `cursor`、`entries[]`、`count`、`eof`、`reset`、`position`、`scanned_bytes`、`truncated`、`line_truncated` |
+| `logs.rotate` | `source`、`confirm`（**必须 true**）、`keep?`（默认 5，1–100） | `rotated_to`、`size_bytes`、`kept`、`removed[]`、`note`（rename 语义：写旧 inode 的进程需重载） |
 | `kore.ping` / `kore.shutdown` / `kore.reload` | — | 协议标准方法 |
 
 ### 语义说明
@@ -54,6 +60,14 @@ kore 日志查看分析插件（M5 批1 · 生产级）：真实读取日志文�
   无 journalctl / 无权限时 `sources` 标记 `readable=false`，`tail`/`search` 返回 `E_UPSTREAM`。
 - 文件不存在：`tail`/`search` 返回 `E_NOTFOUND`；`stats` 返回成功 + `readable=false` + `note`。
 - 未登记的 `source`、非法 `lines`/`limit`/`since`/`keyword`、非对象参数返回 `E_INVALID`。
+- `follow` 不启动 ticker/后台 goroutine：每次调用只做一次前向读取，返回 `cursor` + 增量 + `eof`，
+  是否继续拉取由调用方按需决定（空闲 CPU/定时器为 0，满足 G-19）。只回完整行、不重不漏；
+  文件轮转/截断或游标不匹配时 `reset=true` 并回退尾部窗口；journal 来源返回 `E_UNSUPPORTED`。
+- `download` 分块模式只回 `[offset,next_offset)` 一段（`eof` 表到文件尾），大文件不整份塞单帧；
+  `id` 只接受导出目录内单段文件名，含 `..`/路径分隔符/符号链接一律拒绝；导出总量 5 MiB 封顶。
+- `rotate` 是**破坏性**操作：`confirm=true` 必填，只接受登记来源（永不接受路径），只切割
+  登记目录内的常规文件（符号链接/目录拒绝），并按 `keep` 只删除同目录下匹配
+  `<base>.<UTC时间戳>(-n)` 的旧切割文件；rename 后原路径消失，写旧 inode 的进程需重载。
 
 ## 故障注入
 

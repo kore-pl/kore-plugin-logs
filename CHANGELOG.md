@@ -5,6 +5,35 @@ All notable changes to this project are documented in this file.
 The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.1.0/),
 and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0.html).
 
+## [0.4.0] - 2026-11-23
+
+### Added
+
+- `method_capabilities`（§3.5 #12）：按方法声明宿主能力——`sources` / `tail` / `search` /
+  `stats` / `follow` / `download` / `config.get` 为 `system:read`，`rotate` 与 `config.set`
+  为 `system:admin`；未声明方法仍回退插件级 `system:read`，既有语义不变。
+- `logs.follow`：**带游标的按需增量读取**（G-19：无 ticker、无后台 goroutine、无推送）。
+  入参 `source` / `cursor?` / `max_lines?`（默认 200，1–500）/ `max_bytes?`（默认 1 MiB，
+  上限 4 MiB）/ `keyword?`；返回 `cursor`、`entries`、`count`、`eof`、`reset`、`position`、
+  `scanned_bytes`、`truncated`。只回完整行、不重不漏；末尾不完整行留在文件等补全；
+  文件轮转/截断或游标与来源不匹配时置 `reset=true` 并回退尾部窗口重建游标；
+  journal 来源无稳定偏移，返回 `E_UNSUPPORTED`（请用 `tail`）。
+- `logs.rotate`：**切割**（原子 rename）替代清空，破坏性操作三重门禁——`confirm=true` 必填、
+  只接受登记来源（不接受路径）、目标必须在登记目录内且非符号链接；按 `keep`（默认 5，
+  1–100）只删除同目录下匹配 `<base>.<UTC时间戳>(-n)` 的常规切割文件，其他文件不碰。
+  返回 `rotated_to` / `size_bytes` / `kept` / `removed`，并提示正在写旧 inode 的进程需重载。
+- `logs.download` 支持**行区间导出与分块读取**：新增 `from_line` / `to_line`（1 起，含两端，
+  最多 10000 行、受 64 MiB 扫描预算约束）、`id` / `offset` / `limit`（默认 1 MiB，上限 4 MiB）
+  与 `max_chunk_bytes`、`next_offset`、`eof`；导出仍落 `<state>/exports/`（0700/0600 原子写，
+  5 MiB 封顶），大文件按块取、不整份塞进单帧；`id` 只允许导出目录内的单段文件名，
+  含 `..` / 路径分隔符 / 符号链接一律拒绝。不传 `offset`/`limit`/`id` 时保持 0.3.0
+  「整份 base64 inline」默认语义。
+
+### Changed
+
+- `logs.download` 的响应新增 `id` / `offset` / `next_offset` / `eof` / `chunk_bytes` /
+  `max_chunk_bytes`（纯新增字段，旧调用方无感）。
+
 ## [0.3.0] - 2026-11-23
 
 ### Added

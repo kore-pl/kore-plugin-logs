@@ -126,6 +126,28 @@ func handleLogsVerb(verb string, params json.RawMessage, cfg *config, logger *sl
 			return nil, fromFault(ferr)
 		}
 		return encodeResult(result, "logs.download")
+	case "follow":
+		req, perr := parseFollowParams(params, f)
+		if perr != nil {
+			return nil, perr
+		}
+		req.Debugf = debugLogger(logger)
+		result, ferr := registry.Follow(req)
+		if ferr != nil {
+			return nil, fromFault(ferr)
+		}
+		return encodeResult(result, "logs.follow")
+	case "rotate":
+		req, perr := parseRotateParams(params, f)
+		if perr != nil {
+			return nil, perr
+		}
+		req.Debugf = debugLogger(logger)
+		result, ferr := registry.Rotate(req)
+		if ferr != nil {
+			return nil, fromFault(ferr)
+		}
+		return encodeResult(result, "logs.rotate")
 	default:
 		return nil, notFound(verb)
 	}
@@ -152,8 +174,27 @@ type statsParams struct {
 }
 
 type downloadParams struct {
-	Source string `json:"source"`
-	Lines  *int   `json:"lines"`
+	Source   string `json:"source"`
+	Lines    *int   `json:"lines"`
+	FromLine *int64 `json:"from_line"`
+	ToLine   *int64 `json:"to_line"`
+	ID       string `json:"id"`
+	Offset   *int64 `json:"offset"`
+	Limit    *int64 `json:"limit"`
+}
+
+type followParams struct {
+	Source   string `json:"source"`
+	Cursor   string `json:"cursor"`
+	MaxLines *int   `json:"max_lines"`
+	MaxBytes *int64 `json:"max_bytes"`
+	Keyword  string `json:"keyword"`
+}
+
+type rotateParams struct {
+	Source  string `json:"source"`
+	Confirm *bool  `json:"confirm"`
+	Keep    *int   `json:"keep"`
 }
 
 // parseTailParams 校验入参为 JSON 对象并映射为 logic.TailRequest。
@@ -196,14 +237,61 @@ func parseStatsParams(raw json.RawMessage, fault logic.Fault) (logic.StatsReques
 }
 
 // parseDownloadParams 校验入参为 JSON 对象并映射为 logic.DownloadRequest（stateDir 运行期注入）。
+// 显式给了 id / offset / limit 时进入分块模式；否则保持 0.3.0 的「整份 inline」默认语义。
 func parseDownloadParams(raw json.RawMessage, fault logic.Fault, stateDir string) (logic.DownloadRequest, *pluginapi.Error) {
 	var p downloadParams
 	if perr := decodeObject(raw, &p); perr != nil {
 		return logic.DownloadRequest{}, perr
 	}
-	req := logic.DownloadRequest{Source: p.Source, StateDir: stateDir, Fault: fault}
+	req := logic.DownloadRequest{Source: p.Source, ID: p.ID, StateDir: stateDir, Fault: fault}
 	if p.Lines != nil {
 		req.Lines = *p.Lines
+	}
+	if p.FromLine != nil {
+		req.FromLine = *p.FromLine
+	}
+	if p.ToLine != nil {
+		req.ToLine = *p.ToLine
+	}
+	if p.Offset != nil {
+		req.Offset = *p.Offset
+	}
+	if p.Limit != nil {
+		req.Limit = *p.Limit
+	}
+	req.Chunked = p.ID != "" || p.Offset != nil || p.Limit != nil
+	return req, nil
+}
+
+// parseFollowParams 校验入参为 JSON 对象并映射为 logic.FollowRequest。
+func parseFollowParams(raw json.RawMessage, fault logic.Fault) (logic.FollowRequest, *pluginapi.Error) {
+	var p followParams
+	if perr := decodeObject(raw, &p); perr != nil {
+		return logic.FollowRequest{}, perr
+	}
+	req := logic.FollowRequest{Source: p.Source, Cursor: p.Cursor, Keyword: p.Keyword, Fault: fault}
+	if p.MaxLines != nil {
+		req.MaxLines = *p.MaxLines
+	}
+	if p.MaxBytes != nil {
+		req.MaxBytes = *p.MaxBytes
+	}
+	return req, nil
+}
+
+// parseRotateParams 校验入参为 JSON 对象并映射为 logic.RotateRequest。
+// confirm 默认 false：未显式确认的切割请求一律拒绝。
+func parseRotateParams(raw json.RawMessage, fault logic.Fault) (logic.RotateRequest, *pluginapi.Error) {
+	var p rotateParams
+	if perr := decodeObject(raw, &p); perr != nil {
+		return logic.RotateRequest{}, perr
+	}
+	req := logic.RotateRequest{Source: p.Source, Fault: fault}
+	if p.Confirm != nil {
+		req.Confirm = *p.Confirm
+	}
+	if p.Keep != nil {
+		req.Keep = *p.Keep
 	}
 	return req, nil
 }
@@ -294,7 +382,7 @@ func handleConfigSet(params json.RawMessage, cfg *config) (json.RawMessage, *plu
 func businessVerb(method, id string) (string, bool) {
 	verb := strings.TrimPrefix(method, id+".")
 	switch verb {
-	case "sources", "tail", "search", "stats", "download":
+	case "sources", "tail", "search", "stats", "download", "follow", "rotate":
 		return verb, true
 	default:
 		return "", false

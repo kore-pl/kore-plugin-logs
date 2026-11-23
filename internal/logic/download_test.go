@@ -149,3 +149,115 @@ func TestDownloadLargeFileTruncation(t *testing.T) {
 		t.Fatalf("base64 内容不应为空")
 	}
 }
+
+// TestDownloadChunkRoundTrip 覆盖分块读取边界：按 id + offset/limit 逐块取，
+// 拼接结果必须与整份导出逐字节相同，next_offset 单调前进、最后一块 eof=true。
+func TestDownloadChunkRoundTrip(t *testing.T) {
+	content := makeLines(200)
+	registry := fileRegistry(t, writeTempFile(t, content))
+	stateDir := t.TempDir()
+	full := mustDownload(t, registry, DownloadRequest{Source: "app", Lines: MaxDownloadLines, StateDir: stateDir})
+	if full.ID == "" || !full.EOF || full.NextOffset != full.SizeBytes {
+		t.Fatalf("full=%+v，整份模式应 eof=true 且 next_offset=size", full)
+	}
+	var assembled []byte
+	offset := int64(0)
+	for i := 0; ; i++ {
+		if i > 10000 {
+			t.Fatalf("分块循环未收敛")
+		}
+		piece := mustDownload(t, registry, DownloadRequest{ID: full.ID, StateDir: stateDir, Offset: offset, Limit: 97, Chunked: true})
+		if piece.Offset != offset || piece.ChunkBytes > 97 {
+			t.Fatalf("piece=%+v，期望 offset=%d 且 chunk_bytes≤97", piece, offset)
+		}
+		data, err := base64.StdEncoding.DecodeString(piece.DataBase64)
+		if err != nil || len(data) != piece.ChunkBytes {
+			t.Fatalf("data_base64 与 chunk_bytes 不一致: err=%v len=%d", err, len(data))
+		}
+		assembled = append(assembled, data...)
+		if piece.EOF {
+			if piece.NextOffset != piece.SizeBytes {
+				t.Fatalf("eof 时 next_offset=%d 应等于 size=%d", piece.NextOffset, piece.SizeBytes)
+			}
+			break
+		}
+		if piece.NextOffset <= offset {
+			t.Fatalf("next_offset 未前进: %d → %d", offset, piece.NextOffset)
+		}
+		offset = piece.NextOffset
+	}
+	if string(assembled) != content {
+		t.Fatalf("分块拼接内容与源不一致（len=%d vs %d）", len(assembled), len(content))
+	}
+}
+
+// TestDownloadLineRange 覆盖行区间导出：1 起含两端、超出文件尾只回可用行。
+func TestDownloadLineRange(t *testing.T) {
+	registry := fileRegistry(t, writeTempFile(t, "l1\nl2\nl3\nl4\n"))
+	stateDir := t.TempDir()
+	result := mustDownload(t, registry, DownloadRequest{Source: "app", FromLine: 2, ToLine: 3, StateDir: stateDir})
+	data, err := os.ReadFile(result.Path)
+	if err != nil || string(data) != "l2\nl3\n" {
+		t.Fatalf("range 内容=%q err=%v，期望 l2/l3", data, err)
+	}
+	if result.Lines != 2 {
+		t.Fatalf("lines=%d，期望 2", result.Lines)
+	}
+	overflow := mustDownload(t, registry, DownloadRequest{Source: "app", FromLine: 3, ToLine: 99, StateDir: stateDir})
+	data, _ = os.ReadFile(overflow.Path)
+	if string(data) != "l3\nl4\n" || overflow.Lines != 2 {
+		t.Fatalf("越界区间内容=%q lines=%d，期望 l3/l4", data, overflow.Lines)
+	}
+}
+
+// TestDownloadChunkRejects 覆盖分块/区间的非法入参与越界 id（路径穿越必须拒绝）。
+func TestDownloadChunkRejects(t *testing.T) {
+	registry := fileRegistry(t, writeTempFile(t, "a\nb\n"))
+	stateDir := t.TempDir()
+	full := mustDownload(t, registry, DownloadRequest{Source: "app", Lines: 10, StateDir: stateDir})
+	if _, ferr := registry.Download(DownloadRequest{ID: full.ID, StateDir: stateDir, Offset: -1, Chunked: true}); ferr == nil || ferr.Code != CodeInvalid {
+		t.Fatalf("offset=-1 应 E_INVALID，got %+v", ferr)
+	}
+	if _, ferr := registry.Download(DownloadRequest{ID: full.ID, StateDir: stateDir, Offset: full.SizeBytes + 1, Chunked: true}); ferr == nil || ferr.Code != CodeInvalid {
+		t.Fatalf("offset 越界应 E_INVALID，got %+v", ferr)
+	}
+	if _, ferr := registry.Download(DownloadRequest{ID: full.ID, StateDir: stateDir, Limit: MaxDownloadChunk + 1, Chunked: true}); ferr == nil || ferr.Code != CodeInvalid {
+		t.Fatalf("limit 超限应 E_INVALID，got %+v", ferr)
+	}
+	for _, id := range []string{"../etc/passwd", "/etc/passwd", "..", ".", "a/b", "a\\b", "x..y"} {
+		if _, ferr := registry.Download(DownloadRequest{ID: id, StateDir: stateDir, Chunked: true}); ferr == nil || ferr.Code != CodeInvalid {
+			t.Fatalf("id=%q 应 E_INVALID（路径穿越），got %+v", id, ferr)
+		}
+	}
+	if _, ferr := registry.Download(DownloadRequest{ID: "logs-19700101T000000Z.log", StateDir: stateDir, Chunked: true}); ferr == nil || ferr.Code != CodeNotFound {
+		t.Fatalf("不存在的 id 应 E_NOTFOUND，got %+v", ferr)
+	}
+	if _, ferr := registry.Download(DownloadRequest{Source: "app", StateDir: stateDir, FromLine: 0, ToLine: 3}); ferr == nil || ferr.Code != CodeInvalid {
+		t.Fatalf("只给 to_line 应 E_INVALID，got %+v", ferr)
+	}
+	if _, ferr := registry.Download(DownloadRequest{Source: "app", StateDir: stateDir, FromLine: 3, ToLine: 1}); ferr == nil || ferr.Code != CodeInvalid {
+		t.Fatalf("to<from 应 E_INVALID，got %+v", ferr)
+	}
+	if _, ferr := registry.Download(DownloadRequest{Source: "app", StateDir: stateDir, FromLine: -1, ToLine: 2}); ferr == nil || ferr.Code != CodeInvalid {
+		t.Fatalf("from_line=-1 应 E_INVALID，got %+v", ferr)
+	}
+}
+
+// TestDownloadChunkRejectsSymlink 覆盖导出目录内的符号链接：即使 id 合法也必须拒绝。
+func TestDownloadChunkRejectsSymlink(t *testing.T) {
+	registry := fileRegistry(t, writeTempFile(t, "a\n"))
+	stateDir := t.TempDir()
+	full := mustDownload(t, registry, DownloadRequest{Source: "app", Lines: 10, StateDir: stateDir})
+	dir := filepath.Join(stateDir, "exports")
+	target := filepath.Join(t.TempDir(), "secret")
+	if err := os.WriteFile(target, []byte("x"), 0o600); err != nil {
+		t.Fatalf("写目标失败: %v", err)
+	}
+	link := filepath.Join(dir, "link.log")
+	if err := os.Symlink(target, link); err != nil {
+		t.Fatalf("建符号链接失败: %v", err)
+	}
+	if _, ferr := registry.Download(DownloadRequest{ID: "link.log", StateDir: stateDir, Chunked: true}); ferr == nil || ferr.Code != CodeInvalid {
+		t.Fatalf("符号链接应 E_INVALID，got %+v（full=%s）", ferr, full.ID)
+	}
+}

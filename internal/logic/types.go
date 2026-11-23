@@ -123,9 +123,20 @@ type SearchResult struct {
 }
 
 // DownloadRequest 是 logs.download 的显式入参。StateDir 由运行期注入（KORE_STATE_DIR）。
+//
+// 两种模式：①不传 ID 时按来源生成导出文件（Lines 尾窗，或 FromLine/ToLine 行区间）；
+// ②传 ID 时按 Offset/Limit 对既有导出文件分块读取（大文件不整块塞进单帧）。
+// Chunked 表示调用方显式给了 offset/limit（或给了 ID），此时只回分块内容，
+// 不再回整份 base64，保持 0.3.0「整份 inline」默认语义不变。
 type DownloadRequest struct {
 	Source   string `json:"source"`
 	Lines    int    `json:"lines"`
+	FromLine int64  `json:"from_line"`
+	ToLine   int64  `json:"to_line"`
+	ID       string `json:"id"`
+	Offset   int64  `json:"offset"`
+	Limit    int64  `json:"limit"`
+	Chunked  bool   `json:"-"`
 	StateDir string `json:"-"`
 	Fault    Fault  `json:"-"`
 	Debugf   Debugf `json:"-"`
@@ -134,14 +145,76 @@ type DownloadRequest struct {
 // DownloadResult 是 logs.download 的结果：文件落在 <state>/exports/<source>-<ts>.log，
 // Path 为落盘绝对路径；DataBase64 与 Filename 供前端直接触发浏览器下载
 // （沿 files 插件 file.download 的 base64 通道，无需内核新增静态路由）。
+// 分块模式下 DataBase64 只含 [Offset, NextOffset) 一段，EOF 表示已到文件尾；
+// MaxChunkBytes 是单次分块上限（4 MiB），调用方据此决定 limit。
 type DownloadResult struct {
-	Path       string `json:"path"`
-	Filename   string `json:"filename"`
-	SizeBytes  int64  `json:"size_bytes"`
-	Lines      int    `json:"lines"`
-	DataBase64 string `json:"data_base64"`
-	Truncated  bool   `json:"truncated"`
-	Note       string `json:"note,omitempty"`
+	Path          string `json:"path"`
+	Filename      string `json:"filename"`
+	ID            string `json:"id"`
+	SizeBytes     int64  `json:"size_bytes"`
+	Lines         int    `json:"lines"`
+	DataBase64    string `json:"data_base64,omitempty"`
+	Offset        int64  `json:"offset"`
+	NextOffset    int64  `json:"next_offset"`
+	EOF           bool   `json:"eof"`
+	ChunkBytes    int    `json:"chunk_bytes"`
+	MaxChunkBytes int64  `json:"max_chunk_bytes"`
+	Truncated     bool   `json:"truncated"`
+	Note          string `json:"note,omitempty"`
+}
+
+// FollowRequest 是 logs.follow 的显式入参：Cursor 为空表示从头建立游标（读尾部窗口），
+// 非空表示从上次游标处增量读取。只做「按需拉取」，不起 ticker / 后台 goroutine（G-19）。
+type FollowRequest struct {
+	Source   string `json:"source"`
+	Cursor   string `json:"cursor"`
+	MaxLines int    `json:"max_lines"`
+	MaxBytes int64  `json:"max_bytes"`
+	Keyword  string `json:"keyword"`
+	Fault    Fault  `json:"-"`
+	Debugf   Debugf `json:"-"`
+}
+
+// FollowResult 是 logs.follow 的结果：Cursor 为下一次调用回传的游标；
+// EOF 表示当前游标已消费到文件尾（含末尾不完整行未补齐时为 false）。
+// Reset 表示游标失效（文件轮转/截断/游标与来源不匹配），本次返回尾部窗口并重新建立游标。
+type FollowResult struct {
+	Source        string     `json:"source"`
+	File          string     `json:"file"`
+	Cursor        string     `json:"cursor"`
+	Position      int64      `json:"position"`
+	Entries       []TailLine `json:"entries"`
+	Count         int        `json:"count"`
+	EOF           bool       `json:"eof"`
+	Reset         bool       `json:"reset"`
+	Keyword       string     `json:"keyword,omitempty"`
+	ScannedBytes  int64      `json:"scanned_bytes"`
+	Truncated     bool       `json:"truncated"`
+	LineTruncated bool       `json:"line_truncated"`
+	Note          string     `json:"note,omitempty"`
+}
+
+// RotateRequest 是 logs.rotate 的显式入参：Confirm 必须显式为 true（破坏性操作），
+// Keep 是要保留的切割文件份数（含本次新切割，默认 5，1–100）。
+type RotateRequest struct {
+	Source  string `json:"source"`
+	Confirm bool   `json:"confirm"`
+	Keep    int    `json:"keep"`
+	Fault   Fault  `json:"-"`
+	Debugf  Debugf `json:"-"`
+}
+
+// RotateResult 是 logs.rotate 的结果：RotatedTo 是切割后的文件路径，Removed 是按
+// 保留策略删除的旧切割文件名（只含文件名，不含目录）。
+type RotateResult struct {
+	Source    string   `json:"source"`
+	File      string   `json:"file"`
+	RotatedTo string   `json:"rotated_to"`
+	SizeBytes int64    `json:"size_bytes"`
+	Kept      int      `json:"kept"`
+	Retention int      `json:"retention"`
+	Removed   []string `json:"removed"`
+	Note      string   `json:"note,omitempty"`
 }
 
 // StatsRequest 是 logs.stats 的显式入参。
@@ -178,6 +251,23 @@ const (
 	MaxDownloadLines     = 10000
 	// MaxDownloadBytes 是导出文件的体积硬上限（5 MiB），达到即停止写入并标记截断。
 	MaxDownloadBytes int64 = 5 << 20
+	// DefaultDownloadChunk 是分块读取的缺省块大小（1 MiB），MaxDownloadChunk 是单块上限
+	// （4 MiB；base64 后 5.34 MiB，低于 8 MiB 帧上限）。
+	DefaultDownloadChunk int64 = 1 << 20
+	MaxDownloadChunk     int64 = 4 << 20
+	// MaxExportIDLen 是导出文件 id 的长度上限。
+	MaxExportIDLen = 128
+
+	// DefaultFollowLines / MaxFollowLines 是 logs.follow 单次增量的行数默认与上限。
+	DefaultFollowLines = 200
+	MaxFollowLines     = 500
+	// DefaultFollowBytes / MaxFollowBytes 是单次增量的读取窗口（默认 1 MiB、上限 4 MiB）。
+	DefaultFollowBytes int64 = 1 << 20
+	MaxFollowBytes     int64 = 4 << 20
+
+	// DefaultRotateKeep / MaxRotateKeep 是切割保留份数默认与上限。
+	DefaultRotateKeep = 5
+	MaxRotateKeep     = 100
 	// MaxIncrementalBytes 是单次增量 tail 的前向读取窗口（1 MiB）：
 	// 新增内容超过窗口时跳到最近 1 MiB，跳过部分置 truncated。
 	MaxIncrementalBytes int64 = 1 << 20
