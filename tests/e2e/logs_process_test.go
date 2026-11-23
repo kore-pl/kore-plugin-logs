@@ -44,7 +44,7 @@ func TestLogsProcessE2E(t *testing.T) {
 	defer func() { _ = listener.Close() }()
 	_ = listener.(*net.UnixListener).SetDeadline(time.Now().Add(15 * time.Second))
 
-	process, stderr := startPlugin(t, binary, socket, string(sources))
+	process, stderr := startPlugin(t, binary, socket, string(sources), "KORE_STATE_DIR="+tmp)
 	conn, err := listener.Accept()
 	if err != nil {
 		t.Fatalf("接受插件连接失败: %v (stderr=%s)", err, stderr.String())
@@ -86,6 +86,20 @@ func TestLogsProcessE2E(t *testing.T) {
 				}
 			}
 		}},
+		{"logs.search", `{"source":"app","query":"boom","limit":2}`, false, func(t *testing.T, payload string) {
+			for _, want := range []string{`"count":2`, `"total":5`, `"level":"error"`, `"time":"`} {
+				if !strings.Contains(payload, want) {
+					t.Fatalf("search(query) 缺少 %s: %s", want, payload)
+				}
+			}
+		}},
+		{"logs.download", `{"source":"app","lines":5}`, false, func(t *testing.T, payload string) {
+			for _, want := range []string{`"path":"`, `"size_bytes":`, `"lines":5`, `"data_base64":"`, `"filename":"app-`} {
+				if !strings.Contains(payload, want) {
+					t.Fatalf("download 缺少 %s: %s", want, payload)
+				}
+			}
+		}},
 		{"logs.stats", `{"source":"app"}`, false, func(t *testing.T, payload string) {
 			for _, want := range []string{`"path":"app/app.log"`, `"readable":true`, `"size_bytes":`, `"lines":`} {
 				if !strings.Contains(payload, want) {
@@ -95,6 +109,7 @@ func TestLogsProcessE2E(t *testing.T) {
 		}},
 		{"logs.tail", `{"source":"/etc/passwd"}`, true, nil},
 		{"logs.search", `{"source":"app","keyword":""}`, true, nil},
+		{"logs.download", `{"source":"bogus"}`, true, nil},
 	}
 	for i, step := range steps {
 		response := request(t, conn, fmt.Sprintf("e2e-%d", i), step.method, step.params)
@@ -113,6 +128,50 @@ func TestLogsProcessE2E(t *testing.T) {
 			t.Fatalf("%s 失败: %s", step.method, response.Error.Message)
 		}
 		step.check(t, payload)
+	}
+
+	// 增量 tail 端到端：首次 tail 取 position，追加 3 行后带 position 再拉，
+	// 断言只回新行、position 前进到新文件尾（真实进程 + 真实文件偏移）。
+	first := request(t, conn, "e2e-tail-pos-1", "logs.tail", `{"source":"app","lines":2}`)
+	var firstTail struct {
+		Position int64 `json:"position"`
+		Count    int   `json:"count"`
+	}
+	if err := json.Unmarshal(first.Result, &firstTail); err != nil {
+		t.Fatalf("解析 tail 响应失败: %v", err)
+	}
+	if firstTail.Position == 0 || firstTail.Count != 2 {
+		t.Fatalf("首次 tail=%+v，期望 2 行与 position", firstTail)
+	}
+	appendFile, err := os.OpenFile(logPath, os.O_WRONLY|os.O_APPEND, 0o600)
+	if err != nil {
+		t.Fatalf("打开追加句柄失败: %v", err)
+	}
+	if _, err := appendFile.WriteString("2026-11-22T10:00:59Z ERROR boom-appended\nplain appended\n"); err != nil {
+		t.Fatalf("追加失败: %v", err)
+	}
+	_ = appendFile.Close()
+	second := request(t, conn, "e2e-tail-pos-2", "logs.tail",
+		fmt.Sprintf(`{"source":"app","lines":100,"position":%d}`, firstTail.Position))
+	var secondTail struct {
+		Count    int   `json:"count"`
+		Position int64 `json:"position"`
+		Entries  []struct {
+			Text  string `json:"text"`
+			Level string `json:"level"`
+		} `json:"entries"`
+	}
+	if err := json.Unmarshal(second.Result, &secondTail); err != nil {
+		t.Fatalf("解析增量 tail 响应失败: %v", err)
+	}
+	if secondTail.Count != 2 || len(secondTail.Entries) != 2 {
+		t.Fatalf("增量 tail count=%d，期望只回 2 条新行: %s", secondTail.Count, second.Result)
+	}
+	if secondTail.Entries[0].Text != "2026-11-22T10:00:59Z ERROR boom-appended" || secondTail.Entries[0].Level != "error" {
+		t.Fatalf("增量首行=%+v，期望 boom-appended(error)", secondTail.Entries[0])
+	}
+	if secondTail.Position != firstTail.Position+int64(len("2026-11-22T10:00:59Z ERROR boom-appended\nplain appended\n")) {
+		t.Fatalf("增量 position=%d，期望前进到新文件尾", secondTail.Position)
 	}
 
 	response := request(t, conn, "e2e-shutdown", "kore.shutdown", `{}`)

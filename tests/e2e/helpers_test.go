@@ -28,8 +28,9 @@ func buildPlugin(t *testing.T, dir string) string {
 	return binary
 }
 
-// startPlugin 以给定来源配置启动插件进程。
-func startPlugin(t *testing.T, binary, socket, sources string) (*exec.Cmd, *bytes.Buffer) {
+// startPlugin 以给定来源配置启动插件进程；extraEnv 追加运行期环境变量
+// （如 KORE_STATE_DIR，供 download 导出落盘）。
+func startPlugin(t *testing.T, binary, socket, sources string, extraEnv ...string) (*exec.Cmd, *bytes.Buffer) {
 	t.Helper()
 	stderr := &bytes.Buffer{}
 	process := exec.Command(binary)
@@ -39,6 +40,7 @@ func startPlugin(t *testing.T, binary, socket, sources string) (*exec.Cmd, *byte
 		"KORE_PLUGIN_TOKEN=e2e",
 		"KORE_LOGS_SOURCES="+sources,
 	)
+	process.Env = append(process.Env, extraEnv...)
 	process.Stdout = io.Discard
 	process.Stderr = stderr
 	if err := process.Start(); err != nil {

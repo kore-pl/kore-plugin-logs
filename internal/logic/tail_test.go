@@ -27,7 +27,7 @@ func TestTailLast100Of10k(t *testing.T) {
 	}
 }
 
-// TestTailDefaultAndMaxLines 覆盖默认 100 行与上限 2000 行。
+// TestTailDefaultAndMaxLines 覆盖默认 100 行与上限 500 行。
 func TestTailDefaultAndMaxLines(t *testing.T) {
 	path := writeTempFile(t, makeLines(2500))
 	registry := fileRegistry(t, path)
@@ -39,8 +39,8 @@ func TestTailDefaultAndMaxLines(t *testing.T) {
 	if max.Requested != MaxTailLines || max.Count != MaxTailLines {
 		t.Fatalf("requested=%d count=%d，期望 %d", max.Requested, max.Count, MaxTailLines)
 	}
-	if max.Entries[0].Text != "line-000500" {
-		t.Fatalf("首行=%q，期望 line-000500", max.Entries[0].Text)
+	if max.Entries[0].Text != "line-002000" {
+		t.Fatalf("首行=%q，期望 line-002000", max.Entries[0].Text)
 	}
 }
 
@@ -211,4 +211,157 @@ func TestTailLargeSparsePerf(t *testing.T) {
 		t.Fatalf("耗时 %v，期望 < 1s", elapsed)
 	}
 	t.Logf("PERF tail 200 on %d MiB sparse file: elapsed=%v scanned_bytes=%d", size>>20, elapsed, result.ScannedBytes)
+}
+
+// TestTailPositionIncremental 覆盖增量拉取：首次 tail 得到 position，追加后只回新行、
+// 不重复、position 前进到文件尾。
+func TestTailPositionIncremental(t *testing.T) {
+	path := writeTempFile(t, "line-1\nline-2\nline-3\n")
+	registry := fileRegistry(t, path)
+	first := mustTail(t, registry, TailRequest{Source: "app", Lines: 100})
+	if first.Count != 3 || first.Position == 0 {
+		t.Fatalf("first=%+v，期望 3 行与 position", first)
+	}
+	appended := "line-4\nline-5\n"
+	f, err := os.OpenFile(path, os.O_WRONLY|os.O_APPEND, 0o600)
+	if err != nil {
+		t.Fatalf("打开追加句柄失败: %v", err)
+	}
+	if _, err := f.WriteString(appended); err != nil {
+		t.Fatalf("追加失败: %v", err)
+	}
+	_ = f.Close()
+
+	second := mustTail(t, registry, TailRequest{Source: "app", Lines: 100, Position: first.Position})
+	if second.Count != 2 {
+		t.Fatalf("second.count=%d，期望只回 2 条新行", second.Count)
+	}
+	if second.Entries[0].Text != "line-4" || second.Entries[1].Text != "line-5" {
+		t.Fatalf("second entries=%+v，期望 line-4/line-5", second.Entries)
+	}
+	if second.Position != first.Position+int64(len(appended)) {
+		t.Fatalf("position=%d，期望 %d", second.Position, first.Position+int64(len(appended)))
+	}
+	if second.Truncated {
+		t.Fatalf("正常增量不应 truncated")
+	}
+	// 无新增时再拉：空结果且 position 不变。
+	third := mustTail(t, registry, TailRequest{Source: "app", Lines: 100, Position: second.Position})
+	if third.Count != 0 || third.Position != second.Position {
+		t.Fatalf("third=%d/%d，期望 0 条且 position 不变", third.Count, third.Position)
+	}
+}
+
+// TestTailPositionRotation 覆盖文件被轮转/截断（position 超出文件大小）时回退全量。
+func TestTailPositionRotation(t *testing.T) {
+	path := writeTempFile(t, "old-1\nold-2\n")
+	registry := fileRegistry(t, path)
+	first := mustTail(t, registry, TailRequest{Source: "app", Lines: 100})
+	if err := os.WriteFile(path, []byte("new-1\n"), 0o600); err != nil {
+		t.Fatalf("重写文件失败: %v", err)
+	}
+	second := mustTail(t, registry, TailRequest{Source: "app", Lines: 100, Position: first.Position})
+	if second.Count != 1 || second.Entries[0].Text != "new-1" {
+		t.Fatalf("second=%+v，期望回退全量读 new-1", second)
+	}
+	if second.Position != int64(len("new-1\n")) {
+		t.Fatalf("position=%d，期望新文件大小", second.Position)
+	}
+}
+
+// TestTailPositionPartialLine 覆盖末尾不完整行不下发：等它补全后才回，且不重复。
+func TestTailPositionPartialLine(t *testing.T) {
+	path := writeTempFile(t, "complete-1\n")
+	registry := fileRegistry(t, path)
+	first := mustTail(t, registry, TailRequest{Source: "app", Lines: 100})
+	f, err := os.OpenFile(path, os.O_WRONLY|os.O_APPEND, 0o600)
+	if err != nil {
+		t.Fatalf("打开追加句柄失败: %v", err)
+	}
+	_, _ = f.WriteString("half-writ") // 不带换行
+	_ = f.Close()
+	second := mustTail(t, registry, TailRequest{Source: "app", Lines: 100, Position: first.Position})
+	if second.Count != 0 {
+		t.Fatalf("不完整行不应下发，got %+v", second.Entries)
+	}
+	if second.Position != first.Position {
+		t.Fatalf("无完整新行时 position 不应推进: %d vs %d", second.Position, first.Position)
+	}
+	// 补上换行后（文件重写模拟补全），增量只回补全后的新行。
+	if err := os.WriteFile(path, []byte("complete-1\nhalf-written\n"), 0o600); err != nil {
+		t.Fatalf("补全失败: %v", err)
+	}
+	third := mustTail(t, registry, TailRequest{Source: "app", Lines: 100, Position: first.Position})
+	if third.Count != 1 || third.Entries[0].Text != "half-written" {
+		t.Fatalf("third=%+v，期望补全后只回 half-written", third.Entries)
+	}
+}
+
+// TestTailPositionFilterAdvances 覆盖 keyword 过滤时 position 仍推进过全部行（否则会死循环重取）。
+func TestTailPositionFilterAdvances(t *testing.T) {
+	path := writeTempFile(t, "noise-1\nERROR real\nnoise-2\n")
+	registry := fileRegistry(t, path)
+	first := mustTail(t, registry, TailRequest{Source: "app", Lines: 100, Keyword: "error"})
+	if first.Count != 1 || first.Position != int64(len("noise-1\nERROR real\nnoise-2\n")) {
+		t.Fatalf("first=%+v，期望 1 条命中且 position 到文件尾", first)
+	}
+	second := mustTail(t, registry, TailRequest{Source: "app", Lines: 100, Keyword: "error", Position: first.Position})
+	if second.Count != 0 || second.Position != first.Position {
+		t.Fatalf("second=%+v，期望空且 position 不动", second)
+	}
+}
+
+// TestTailPositionJumpWindow 覆盖新增内容超过 1 MiB 窗口时跳到最近 1 MiB 并置 truncated。
+func TestTailPositionJumpWindow(t *testing.T) {
+	filler := strings.Repeat("x", 127) + "\n" // 128B/行，1 MiB = 8192 行
+	var appended strings.Builder
+	for i := 0; i < 9000; i++ { // 追加 1.125 MiB > 1 MiB 窗口
+		appended.WriteString(filler)
+	}
+	path := writeTempFile(t, "seed\n")
+	registry := fileRegistry(t, path)
+	first := mustTail(t, registry, TailRequest{Source: "app", Lines: 1})
+	if first.Position != int64(len("seed\n")) {
+		t.Fatalf("position=%d，期望种子行后", first.Position)
+	}
+	f, err := os.OpenFile(path, os.O_WRONLY|os.O_APPEND, 0o600)
+	if err != nil {
+		t.Fatalf("打开追加句柄失败: %v", err)
+	}
+	if _, err := f.WriteString(appended.String()); err != nil {
+		t.Fatalf("追加失败: %v", err)
+	}
+	_ = f.Close()
+	second := mustTail(t, registry, TailRequest{Source: "app", Lines: MaxTailLines, Position: first.Position})
+	if !second.Truncated {
+		t.Fatalf("跳过窗口外内容应置 truncated")
+	}
+	if second.ScannedBytes > MaxIncrementalBytes {
+		t.Fatalf("scanned=%d，超过 1 MiB 窗口", second.ScannedBytes)
+	}
+	if second.Count != MaxTailLines {
+		t.Fatalf("count=%d，期望窗口内命中行按上限截取", second.Count)
+	}
+}
+
+// TestTailLineTimeAndLevel 覆盖尾部条目带 time 与 level。
+func TestTailLineTimeAndLevel(t *testing.T) {
+	content := "2026-11-22T10:00:00Z INFO ok-1\nplain line\n2026-11-22T10:00:01Z ERROR boom\n"
+	registry := fileRegistry(t, writeTempFile(t, content))
+	result := mustTail(t, registry, TailRequest{Source: "app", Lines: 3})
+	if result.Count != 3 {
+		t.Fatalf("count=%d，期望 3", result.Count)
+	}
+	if result.Entries[0].Level != "info" || result.Entries[0].Time != "2026-11-22T10:00:00Z" {
+		t.Fatalf("e0=%+v，期望 info+RFC3339", result.Entries[0])
+	}
+	if result.Entries[1].Level != "" || result.Entries[1].Time != "" {
+		t.Fatalf("e1=%+v，期望无级别无时间", result.Entries[1])
+	}
+	if result.Entries[2].Level != "error" || result.Entries[2].Time != "2026-11-22T10:00:01Z" {
+		t.Fatalf("e2=%+v，期望 error", result.Entries[2])
+	}
+	if result.Position != int64(len(content)) {
+		t.Fatalf("position=%d，期望文件尾", result.Position)
+	}
 }

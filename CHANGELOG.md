@@ -5,6 +5,29 @@ All notable changes to this project are documented in this file.
 The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.1.0/),
 and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0.html).
 
+## [0.3.0] - 2026-11-23
+
+### Added
+
+- `logs.download {source, lines?}`：导出日志片段到 `<KORE_STATE_DIR>/exports/<source>-<UTC时间戳>.log`
+  （0700 目录 / 0600 文件，临时文件 + rename 原子落盘）；默认 1000 行、上限 10000 行，
+  片段总量 5 MiB 封顶并置 `truncated`；响应含 `path` / `filename` / `size_bytes` / `lines` /
+  `data_base64`——前端按 file.download 同款 base64 通道触发浏览器下载，内核无需新增静态路由。
+- `logs.search` 响应升级：`matches` 每条新增 `time`（行首时间戳 RFC3339 规范形，解析失败为空）
+  与 `level`（行首 64 字节窗口解析 ERROR/WARN/INFO/DEBUG，词边界校验，`INFORMATION`/`ERRNO`
+  不误判）；新增 `total`（全文命中总行数，达到 limit 后继续扫描计数），`total > count` 置
+  `truncated`。入参新增 `query`（0.2.x `keyword` 继续兼容，`query` 优先）。
+- `logs.tail` 增量拉取：入参新增 `position`（字节偏移），file 来源从该偏移前向只回**完整新行**，
+  响应新增 `position`（最后一条完整行之后的偏移）；末尾不完整行留在文件等补全，不重复下发；
+  新增内容超过 1 MiB 窗口跳到最近 1 MiB 并置 `truncated`；文件轮转（position 超出文件大小）
+  自动回退全量尾读。journal 来源忽略 position（无稳定偏移）。
+- `entries` 每条同步携带 `time` / `level`（tail / journal 同口径）。
+
+### Changed
+
+- `logs.tail` 行数上限 2000 → 500（前端跟随视图保留上限同步 500 行）。
+- journalctl 时间布局补充 `--output=short-iso` 的 `+0800` 无冒号偏移格式。
+
 ## [0.2.1] - 2026-11-23
 
 - build: 位级可复现打包（stage chmod + tar --mode 归一、size_bytes 收敛），二进制改嵌 manifest.json，消除同版本 sha 漂移

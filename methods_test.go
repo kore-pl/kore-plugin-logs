@@ -140,11 +140,12 @@ func TestLogsInvalidParams(t *testing.T) {
 		{"tail 非对象", "logs.tail", `"x"`, "params 必须是 JSON 对象"},
 		{"tail 未登记来源", "logs.tail", `{"source":"bogus"}`, "来源未登记"},
 		{"tail lines 负数", "logs.tail", `{"source":"app","lines":-1}`, "lines 必须在"},
-		{"tail lines 超限", "logs.tail", `{"source":"app","lines":2001}`, "lines 必须在"},
+		{"tail lines 超限", "logs.tail", `{"source":"app","lines":501}`, "lines 必须在"},
 		{"tail since 非法", "logs.tail", `{"source":"app","since":"yesterday"}`, "since 必须是 RFC3339"},
-		{"search 缺 keyword", "logs.search", `{"source":"app"}`, "keyword 必填"},
-		{"search limit 超限", "logs.search", `{"source":"app","keyword":"x","limit":1001}`, "limit 必须在"},
+		{"search 缺 query", "logs.search", `{"source":"app"}`, "query 必填"},
+		{"search limit 超限", "logs.search", `{"source":"app","query":"x","limit":1001}`, "limit 必须在"},
 		{"stats 缺 source", "logs.stats", `{}`, "source 必填"},
+		{"download 缺 state_dir", "logs.download", `{"source":"app"}`, "KORE_STATE_DIR"},
 	}
 	for _, tc := range cases {
 		t.Run(tc.name, func(t *testing.T) {

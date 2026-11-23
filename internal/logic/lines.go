@@ -43,9 +43,11 @@ func foldInto(dst, src []byte) []byte {
 }
 
 // lineTimeLayouts 是行首时间戳的候选格式；带年份的才可比较，无年份的解析失败即跳过过滤。
+// "2006-01-02T15:04:05-0700" 覆盖 journalctl --output=short-iso 的偏移格式（+0800 无冒号）。
 var lineTimeLayouts = []string{
 	time.RFC3339Nano,
 	"2006-01-02T15:04:05",
+	"2006-01-02T15:04:05-0700",
 	"2006-01-02 15:04:05.999999999Z07:00",
 	"2006-01-02 15:04:05.999999999",
 	"2006-01-02 15:04:05",
@@ -86,6 +88,63 @@ func firstFields(raw []byte, n int) []byte {
 		}
 	}
 	return raw
+}
+
+// lineTimeText 把行首时间戳规范化为 RFC3339 字符串；解析失败返回空串。
+func lineTimeText(raw []byte) string {
+	if ts, ok := parseLineTime(raw); ok {
+		return ts.Format(time.RFC3339)
+	}
+	return ""
+}
+
+// lineLevelPrefixBytes 是级别识别的行首扫描窗口：级别词（如 ERROR）出现在该窗口内才认定。
+const lineLevelPrefixBytes = 64
+
+// lineLevelTokens 是行首窗口内识别的级别词（仅大写规范形）与规范化级别名。
+// 顺序无关：按出现位置取最早命中；同位置的兼容词（WARN/WARNING）映射同一级别。
+var lineLevelTokens = []struct {
+	token string
+	level string
+}{
+	{"WARNING", "warn"},
+	{"WARN", "warn"},
+	{"ERROR", "error"},
+	{"ERR", "error"},
+	{"INFO", "info"},
+	{"DEBUG", "debug"},
+}
+
+// parseLineLevel 从行首 64 字节窗口解析日志级别：只认大写词且两侧不能紧邻其他
+// 大写字母（"INFORMATION" 不算 INFO，"PERROR" 不算 ERROR）；识别不到返回空串。
+// 经典 syslog 行不含级别词，返回空串由前端按默认样式渲染。
+func parseLineLevel(raw []byte) string {
+	window := raw
+	if len(window) > lineLevelPrefixBytes {
+		window = window[:lineLevelPrefixBytes]
+	}
+	isUpper := func(c byte) bool { return c >= 'A' && c <= 'Z' }
+	for i := 0; i < len(window); i++ {
+		if !isUpper(window[i]) {
+			continue
+		}
+		if i > 0 && isUpper(window[i-1]) {
+			continue // 词中（前一个大写字母已随更早起点匹配过），跳过
+		}
+		for _, lt := range lineLevelTokens {
+			if i+len(lt.token) > len(window) {
+				continue
+			}
+			if string(window[i:i+len(lt.token)]) != lt.token {
+				continue
+			}
+			if next := i + len(lt.token); next < len(window) && isUpper(window[next]) {
+				continue // 后随大写字母：是更长单词（如 ERRNO），不算命中
+			}
+			return lt.level
+		}
+	}
+	return ""
 }
 
 // sanitizeLine 把行内容转为合法 UTF-8 字符串（非法字节替换为 U+FFFD）。

@@ -115,6 +115,17 @@ func handleLogsVerb(verb string, params json.RawMessage, cfg *config, logger *sl
 			return nil, fromFault(ferr)
 		}
 		return encodeResult(result, "logs.stats")
+	case "download":
+		req, perr := parseDownloadParams(params, f, cfg.stateDir)
+		if perr != nil {
+			return nil, perr
+		}
+		req.Debugf = debugLogger(logger)
+		result, ferr := registry.Download(req)
+		if ferr != nil {
+			return nil, fromFault(ferr)
+		}
+		return encodeResult(result, "logs.download")
 	default:
 		return nil, notFound(verb)
 	}
@@ -122,20 +133,27 @@ func handleLogsVerb(verb string, params json.RawMessage, cfg *config, logger *sl
 
 // tailParams 用指针区分“未传 lines”和“显式 lines=0”。
 type tailParams struct {
-	Source  string `json:"source"`
-	Lines   *int   `json:"lines"`
-	Keyword string `json:"keyword"`
-	Since   string `json:"since"`
+	Source   string `json:"source"`
+	Lines    *int   `json:"lines"`
+	Keyword  string `json:"keyword"`
+	Since    string `json:"since"`
+	Position *int64 `json:"position"`
 }
 
 type searchParams struct {
 	Source  string `json:"source"`
+	Query   string `json:"query"`
 	Keyword string `json:"keyword"`
 	Limit   *int   `json:"limit"`
 }
 
 type statsParams struct {
 	Source string `json:"source"`
+}
+
+type downloadParams struct {
+	Source string `json:"source"`
+	Lines  *int   `json:"lines"`
 }
 
 // parseTailParams 校验入参为 JSON 对象并映射为 logic.TailRequest。
@@ -148,16 +166,20 @@ func parseTailParams(raw json.RawMessage, fault logic.Fault) (logic.TailRequest,
 	if p.Lines != nil {
 		req.Lines = *p.Lines
 	}
+	if p.Position != nil {
+		req.Position = *p.Position
+	}
 	return req, nil
 }
 
 // parseSearchParams 校验入参为 JSON 对象并映射为 logic.SearchRequest。
+// query（0.3.0 起）与 keyword（0.2.x 兼容）都接受，query 优先。
 func parseSearchParams(raw json.RawMessage, fault logic.Fault) (logic.SearchRequest, *pluginapi.Error) {
 	var p searchParams
 	if perr := decodeObject(raw, &p); perr != nil {
 		return logic.SearchRequest{}, perr
 	}
-	req := logic.SearchRequest{Source: p.Source, Keyword: p.Keyword, Fault: fault}
+	req := logic.SearchRequest{Source: p.Source, Query: p.Query, Keyword: p.Keyword, Fault: fault}
 	if p.Limit != nil {
 		req.Limit = *p.Limit
 	}
@@ -171,6 +193,19 @@ func parseStatsParams(raw json.RawMessage, fault logic.Fault) (logic.StatsReques
 		return logic.StatsRequest{}, perr
 	}
 	return logic.StatsRequest{Source: p.Source, Fault: fault}, nil
+}
+
+// parseDownloadParams 校验入参为 JSON 对象并映射为 logic.DownloadRequest（stateDir 运行期注入）。
+func parseDownloadParams(raw json.RawMessage, fault logic.Fault, stateDir string) (logic.DownloadRequest, *pluginapi.Error) {
+	var p downloadParams
+	if perr := decodeObject(raw, &p); perr != nil {
+		return logic.DownloadRequest{}, perr
+	}
+	req := logic.DownloadRequest{Source: p.Source, StateDir: stateDir, Fault: fault}
+	if p.Lines != nil {
+		req.Lines = *p.Lines
+	}
+	return req, nil
 }
 
 // debugLogger 把 slog 包装成 logic.Debugf 的格式化签名（slog 不会对首参做格式化）。
@@ -259,7 +294,7 @@ func handleConfigSet(params json.RawMessage, cfg *config) (json.RawMessage, *plu
 func businessVerb(method, id string) (string, bool) {
 	verb := strings.TrimPrefix(method, id+".")
 	switch verb {
-	case "sources", "tail", "search", "stats":
+	case "sources", "tail", "search", "stats", "download":
 		return verb, true
 	default:
 		return "", false

@@ -9,8 +9,11 @@ import (
 	"strings"
 )
 
-// Search 实现 logs.search：从文件头按 64 KiB 逐块扫描匹配行，返回行号、
-// 命中内容、已扫描字节数；达到 limit 或 64 MiB 上限即截断。
+// Search 实现 logs.search：全文件按 64 KiB 逐块扫描，统计**全文命中总行数**（Total），
+// Matches 只保留前 limit 条（含行号、行首时间、级别、命中内容）；达到 limit 不再存储但
+// 继续扫描计数，64 MiB 扫描预算耗尽未到 EOF 即置 Truncated。keyword 为字面子串
+// （大小写不敏感，等价 grep -iF，正则元字符按字面处理），journal 来源先经 journalctl
+// --grep（QuoteMeta 字面化）预过滤再按同一口径复核。
 func (r *Registry) Search(req SearchRequest) (*SearchResult, *FaultError) {
 	if ferr := checkFault(req.Fault); ferr != nil {
 		return nil, ferr
@@ -18,10 +21,11 @@ func (r *Registry) Search(req SearchRequest) (*SearchResult, *FaultError) {
 	if perr := checkSourceParam(req.Source); perr != nil {
 		return nil, perr
 	}
-	if strings.TrimSpace(req.Keyword) == "" {
-		return nil, methodErr(CodeInvalid, "keyword 必填")
+	query := effectiveQuery(req)
+	if strings.TrimSpace(query) == "" {
+		return nil, methodErr(CodeInvalid, "query 必填")
 	}
-	if perr := checkKeywordLen(req.Keyword); perr != nil {
+	if perr := checkKeywordLen(query); perr != nil {
 		return nil, perr
 	}
 	limit, perr := effectiveSearchLimit(req.Limit)
@@ -33,17 +37,18 @@ func (r *Registry) Search(req SearchRequest) (*SearchResult, *FaultError) {
 		return nil, perr
 	}
 	result := &SearchResult{
-		Source: entry.spec.Name, Keyword: req.Keyword, Limit: limit,
+		Source: entry.spec.Name, Keyword: query, Limit: limit,
 		Matches: make([]SearchMatch, 0, limit),
 	}
 	switch entry.spec.Type {
 	case SourceTypeJournal:
-		matches, scanned, truncated, jerr := searchJournal(req.Keyword, limit)
+		matches, total, scanned, truncated, jerr := searchJournal(query, limit)
 		if jerr != nil {
 			return nil, jerr
 		}
 		result.File = "journal"
 		result.Matches = matches
+		result.Total = total
 		result.ScannedBytes = scanned
 		result.Truncated = truncated
 	default:
@@ -53,21 +58,35 @@ func (r *Registry) Search(req SearchRequest) (*SearchResult, *FaultError) {
 		}
 		defer func() { _ = file.Close() }()
 		debugf(req.Debugf, "logs.search source=%s path=%s", entry.spec.Name, filepath.Join(entry.file.realDir, entry.file.base))
-		matches, scanned, truncated, serr := searchFileContent(file, req.Keyword, limit)
+		matches, total, scanned, truncated, serr := searchFileContent(file, query, limit)
 		if serr != nil {
 			return nil, serr
 		}
 		result.File = entry.file.base
 		result.Matches = matches
+		result.Total = total
 		result.ScannedBytes = scanned
 		result.Truncated = truncated
 	}
 	result.Count = len(result.Matches)
+	if result.Total > result.Count {
+		result.Truncated = true
+	}
 	return result, nil
 }
 
-// searchFileContent 顺序分块扫描文件；每行最多保留 8 KiB，跨块行用 carry 拼接。
-func searchFileContent(file *os.File, keyword string, limit int) ([]SearchMatch, int64, bool, *FaultError) {
+// effectiveQuery 解析检索词：0.3.0 起首选 query；0.2.x 的 keyword 继续兼容。
+func effectiveQuery(req SearchRequest) string {
+	if req.Query != "" {
+		return req.Query
+	}
+	return req.Keyword
+}
+
+// searchFileContent 顺序分块扫描全文件；每行最多保留 8 KiB，跨块行用 carry 拼接。
+// 达到 limit 后不再存储命中，但继续扫描统计 Total；返回：命中、全文命中总数、
+// 已扫描字节数、是否因预算耗尽未读到 EOF。
+func searchFileContent(file *os.File, keyword string, limit int) ([]SearchMatch, int, int64, bool, *FaultError) {
 	matches := make([]SearchMatch, 0, limit)
 	keywordLower := []byte(asciiLower(keyword))
 	scratch := make([]byte, 0, MaxLineBytes)
@@ -75,6 +94,7 @@ func searchFileContent(file *os.File, keyword string, limit int) ([]SearchMatch,
 	line := make([]byte, 0, MaxLineBytes)
 	overflow := false
 	lineNo := 0
+	total := 0
 	var scanned int64
 	eof := false
 
@@ -98,9 +118,9 @@ func searchFileContent(file *os.File, keyword string, limit int) ([]SearchMatch,
 				matched, next := searchMatch(line, keywordLower, scratch)
 				scratch = next
 				if matched {
-					matches = append(matches, SearchMatch{LineNo: lineNo, Text: sanitizeLine(line), Truncated: overflow})
-					if len(matches) >= limit {
-						return matches, scanned, true, nil
+					total++
+					if len(matches) < limit {
+						matches = append(matches, searchMatchOf(lineNo, line, overflow))
 					}
 				}
 				line = line[:0]
@@ -114,16 +134,30 @@ func searchFileContent(file *os.File, keyword string, limit int) ([]SearchMatch,
 				if len(line) > 0 || overflow {
 					lineNo++
 					if matched, _ := searchMatch(line, keywordLower, scratch); matched {
-						matches = append(matches, SearchMatch{LineNo: lineNo, Text: sanitizeLine(line), Truncated: overflow})
+						total++
+						if len(matches) < limit {
+							matches = append(matches, searchMatchOf(lineNo, line, overflow))
+						}
 					}
 				}
 				break
 			}
-			return nil, scanned, false, methodErr(CodeInternal, "读取来源文件失败")
+			return nil, 0, scanned, false, methodErr(CodeInternal, "读取来源文件失败")
 		}
 	}
-	truncated := len(matches) >= limit || (!eof && scanned >= MaxScanBytes)
-	return matches, scanned, truncated, nil
+	truncated := !eof
+	return matches, total, scanned, truncated, nil
+}
+
+// searchMatchOf 由原始行构造带时间与级别的 SearchMatch。
+func searchMatchOf(lineNo int, raw []byte, truncated bool) SearchMatch {
+	return SearchMatch{
+		LineNo:    lineNo,
+		Text:      sanitizeLine(raw),
+		Time:      lineTimeText(raw),
+		Level:     parseLineLevel(raw),
+		Truncated: truncated,
+	}
 }
 
 // appendCapped 把片段追加到行缓冲，最多保留 MaxLineBytes；超出部分丢弃并标记截断。

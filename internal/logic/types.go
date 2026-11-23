@@ -6,7 +6,10 @@
 // 最终文件不得是符号链接。单次扫描上限 64 MiB，单行上限 8 KiB，不整文件读入内存。
 package logic
 
-import "time"
+import (
+	"strconv"
+	"time"
+)
 
 // SourceType 是来源类型：常规日志文件或 systemd journal。
 type SourceType string
@@ -45,28 +48,36 @@ type SourcesResult struct {
 type Debugf func(format string, args ...any)
 
 // TailRequest 是 logs.tail 的显式入参。Fault/Debugf 只由运行期注入。
+// Position 是上一次响应回传的文件字节偏移：> 0 时走增量前向读取（只回新行），
+// 仅对 file 来源生效；journal 无稳定偏移，忽略该字段。
 type TailRequest struct {
-	Source  string `json:"source"`
-	Lines   int    `json:"lines"`
-	Keyword string `json:"keyword"`
-	Since   string `json:"since"`
-	Fault   Fault  `json:"-"`
-	Debugf  Debugf `json:"-"`
+	Source   string `json:"source"`
+	Lines    int    `json:"lines"`
+	Keyword  string `json:"keyword"`
+	Since    string `json:"since"`
+	Position int64  `json:"position"`
+	Fault    Fault  `json:"-"`
+	Debugf   Debugf `json:"-"`
 }
 
 // TailLine 是尾部读取的单行；超 8 KiB 的行截断并置 Truncated。
+// Time 是行首时间戳的 RFC3339 规范形（解析失败为空串）；Level 是行首区域解析的级别（error/warn/info/debug，未知为空串）。
 type TailLine struct {
 	Text      string `json:"text"`
+	Time      string `json:"time,omitempty"`
+	Level     string `json:"level,omitempty"`
 	Truncated bool   `json:"truncated"`
 }
 
-// TailResult 是 logs.tail 的结构化结果。
+// TailResult 是 logs.tail 的结构化结果。Position 是下次增量拉取的字节偏移
+// （file 来源为当前文件内「最后一条完整行」之后的偏移；journal 恒为 0）。
 type TailResult struct {
 	Source        string     `json:"source"`
 	File          string     `json:"file"`
 	Requested     int        `json:"requested"`
 	Count         int        `json:"count"`
 	Entries       []TailLine `json:"entries"`
+	Position      int64      `json:"position"`
 	Keyword       string     `json:"keyword,omitempty"`
 	Since         string     `json:"since,omitempty"`
 	ScannedBytes  int64      `json:"scanned_bytes"`
@@ -74,9 +85,12 @@ type TailResult struct {
 	LineTruncated bool       `json:"line_truncated"`
 }
 
-// SearchRequest 是 logs.search 的显式入参。
+// SearchRequest 是 logs.search 的显式入参。Query 是 0.3.0 起的首选字段名；
+// 0.2.x 调用方传的 Keyword 继续兼容（Query 优先）。keyword/query 语义为
+// ASCII 大小写不敏感的**字面子串**（正则元字符按字面处理，等价 grep -iF）。
 type SearchRequest struct {
 	Source  string `json:"source"`
+	Query   string `json:"query"`
 	Keyword string `json:"keyword"`
 	Limit   int    `json:"limit"`
 	Fault   Fault  `json:"-"`
@@ -84,23 +98,50 @@ type SearchRequest struct {
 }
 
 // SearchMatch 是一条命中：LineNo 为 1 起行号，Text 为行内容（超长截断）。
+// Time 是行首时间戳的 RFC3339 规范形（解析失败为空串）；Level 是行首区域解析的级别。
 type SearchMatch struct {
 	LineNo    int    `json:"line_no"`
 	Text      string `json:"text"`
+	Time      string `json:"time,omitempty"`
+	Level     string `json:"level,omitempty"`
 	Truncated bool   `json:"truncated"`
 }
 
-// SearchResult 是 logs.search 的结构化结果。
+// SearchResult 是 logs.search 的结构化结果。Total 是全文命中总行数（可能大于
+// len(Matches)，此时 Truncated=true）；Matches 只保留前 Limit 条。
 type SearchResult struct {
 	Source       string        `json:"source"`
 	File         string        `json:"file"`
 	Keyword      string        `json:"keyword"`
 	Limit        int           `json:"limit"`
 	Count        int           `json:"count"`
+	Total        int           `json:"total"`
 	Matches      []SearchMatch `json:"matches"`
 	ScannedBytes int64         `json:"scanned_bytes"`
 	Truncated    bool          `json:"truncated"`
 	Note         string        `json:"note,omitempty"`
+}
+
+// DownloadRequest 是 logs.download 的显式入参。StateDir 由运行期注入（KORE_STATE_DIR）。
+type DownloadRequest struct {
+	Source   string `json:"source"`
+	Lines    int    `json:"lines"`
+	StateDir string `json:"-"`
+	Fault    Fault  `json:"-"`
+	Debugf   Debugf `json:"-"`
+}
+
+// DownloadResult 是 logs.download 的结果：文件落在 <state>/exports/<source>-<ts>.log，
+// Path 为落盘绝对路径；DataBase64 与 Filename 供前端直接触发浏览器下载
+// （沿 files 插件 file.download 的 base64 通道，无需内核新增静态路由）。
+type DownloadResult struct {
+	Path       string `json:"path"`
+	Filename   string `json:"filename"`
+	SizeBytes  int64  `json:"size_bytes"`
+	Lines      int    `json:"lines"`
+	DataBase64 string `json:"data_base64"`
+	Truncated  bool   `json:"truncated"`
+	Note       string `json:"note,omitempty"`
 }
 
 // StatsRequest 是 logs.stats 的显式入参。
@@ -127,10 +168,19 @@ type StatsResult struct {
 // 方法级上限与默认值。
 const (
 	DefaultTailLines   = 100
-	MaxTailLines       = 2000
+	MaxTailLines       = 500
 	DefaultSearchLimit = 100
 	MaxSearchLimit     = 1000
 	MaxKeywordLen      = 256
+
+	// DefaultDownloadLines / MaxDownloadLines 是 logs.download 的行数默认与上限。
+	DefaultDownloadLines = 1000
+	MaxDownloadLines     = 10000
+	// MaxDownloadBytes 是导出文件的体积硬上限（5 MiB），达到即停止写入并标记截断。
+	MaxDownloadBytes int64 = 5 << 20
+	// MaxIncrementalBytes 是单次增量 tail 的前向读取窗口（1 MiB）：
+	// 新增内容超过窗口时跳到最近 1 MiB，跳过部分置 truncated。
+	MaxIncrementalBytes int64 = 1 << 20
 
 	// MaxScanBytes 是单次 tail/search 反向或正向扫描的硬上限（64 MiB）。
 	MaxScanBytes int64 = 64 << 20
@@ -175,13 +225,13 @@ func methodErr(code, msg string) *FaultError {
 	return &FaultError{Code: code, Message: msg}
 }
 
-// effectiveTailLines 校验 lines：0 取默认 100，合法区间 1..2000。
+// effectiveTailLines 校验 lines：0 取默认 100，合法区间 1..500。
 func effectiveTailLines(lines int) (int, *FaultError) {
 	if lines == 0 {
 		return DefaultTailLines, nil
 	}
 	if lines < 1 || lines > MaxTailLines {
-		return 0, methodErr(CodeInvalid, "lines 必须在 1 到 2000 之间")
+		return 0, methodErr(CodeInvalid, "lines 必须在 1 到 "+strconv.Itoa(MaxTailLines)+" 之间")
 	}
 	return lines, nil
 }
@@ -195,6 +245,17 @@ func effectiveSearchLimit(limit int) (int, *FaultError) {
 		return 0, methodErr(CodeInvalid, "limit 必须在 1 到 1000 之间")
 	}
 	return limit, nil
+}
+
+// effectiveDownloadLines 校验导出行数：0 取默认 1000，合法区间 1..10000。
+func effectiveDownloadLines(lines int) (int, *FaultError) {
+	if lines == 0 {
+		return DefaultDownloadLines, nil
+	}
+	if lines < 1 || lines > MaxDownloadLines {
+		return 0, methodErr(CodeInvalid, "lines 必须在 1 到 "+strconv.Itoa(MaxDownloadLines)+" 之间")
+	}
+	return lines, nil
 }
 
 // checkSourceParam 校验 source 名称非空。

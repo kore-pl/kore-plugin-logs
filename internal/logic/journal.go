@@ -116,7 +116,7 @@ func tailJournal(need int, keyword string, since time.Time, hasSince bool, match
 		if !matched {
 			continue
 		}
-		entries = append(entries, TailLine{Text: sanitizeLine(window[i].text), Truncated: window[i].trunc})
+		entries = append(entries, tailLineOf(window[i].text, window[i].trunc))
 	}
 	for i, j := 0, len(entries)-1; i < j; i, j = i+1, j-1 {
 		entries[i], entries[j] = entries[j], entries[i]
@@ -124,20 +124,21 @@ func tailJournal(need int, keyword string, since time.Time, hasSince bool, match
 	return entries, scanned, truncated, lineTruncated, nil
 }
 
-// searchJournal 通过 journalctl 的 grep 预过滤后流式读取，达到 limit 或 64 MiB 即停。
-func searchJournal(keyword string, limit int) ([]SearchMatch, int64, bool, *FaultError) {
+// searchJournal 通过 journalctl 的 grep 预过滤后流式读取；统计全文命中总数（Total），
+// Matches 只保留前 limit 条，达到 limit 或 64 MiB 即停。
+func searchJournal(keyword string, limit int) ([]SearchMatch, int, int64, bool, *FaultError) {
 	ctx, cancel := context.WithTimeout(context.Background(), journalSearchTimeout)
 	defer cancel()
 	args := []string{"-q", "--no-pager", "--output=short-iso", "--case-sensitive=no", "--grep=" + regexp.QuoteMeta(keyword)}
 	cmd := exec.CommandContext(ctx, journalBin, args...)
 	stdout, err := cmd.StdoutPipe()
 	if err != nil {
-		return nil, 0, false, methodErr(CodeUpstream, "journalctl 无法启动")
+		return nil, 0, 0, false, methodErr(CodeUpstream, "journalctl 无法启动")
 	}
 	var stderr bytes.Buffer
 	cmd.Stderr = &stderr
 	if err := cmd.Start(); err != nil {
-		return nil, 0, false, methodErr(CodeUpstream, "journalctl 无法启动")
+		return nil, 0, 0, false, methodErr(CodeUpstream, "journalctl 无法启动")
 	}
 	reader := bufio.NewReaderSize(stdout, ReadBlockSize)
 	keywordLower := []byte(asciiLower(keyword))
@@ -145,6 +146,7 @@ func searchJournal(keyword string, limit int) ([]SearchMatch, int64, bool, *Faul
 	matches := make([]SearchMatch, 0, limit)
 	var scanned int64
 	lineNo := 0
+	total := 0
 	truncated := false
 	for {
 		line, lineTruncated, n, readErr := readCappedLine(reader)
@@ -154,11 +156,9 @@ func searchJournal(keyword string, limit int) ([]SearchMatch, int64, bool, *Faul
 			matched, next := searchMatch(line, keywordLower, scratch)
 			scratch = next
 			if matched {
-				matches = append(matches, SearchMatch{LineNo: lineNo, Text: sanitizeLine(line), Truncated: lineTruncated})
-				if len(matches) >= limit {
-					truncated = true
-					cancel()
-					break
+				total++
+				if len(matches) < limit {
+					matches = append(matches, searchMatchOf(lineNo, line, lineTruncated))
 				}
 			}
 		}
@@ -168,7 +168,7 @@ func searchJournal(keyword string, limit int) ([]SearchMatch, int64, bool, *Faul
 			}
 			cancel()
 			_ = cmd.Wait()
-			return nil, scanned, false, methodErr(CodeUpstream, "journalctl 读取失败")
+			return nil, 0, scanned, false, methodErr(CodeUpstream, "journalctl 读取失败")
 		}
 		if scanned >= MaxScanBytes {
 			truncated = true
@@ -178,12 +178,15 @@ func searchJournal(keyword string, limit int) ([]SearchMatch, int64, bool, *Faul
 	}
 	if err := cmd.Wait(); err != nil && !truncated {
 		if errors.Is(ctx.Err(), context.DeadlineExceeded) {
-			return nil, scanned, false, methodErr(CodeUpstream, "journalctl 查询超时")
+			return nil, 0, scanned, false, methodErr(CodeUpstream, "journalctl 查询超时")
 		}
-		return nil, scanned, false, methodErr(CodeUpstream, "journalctl 查询失败")
+		return nil, 0, scanned, false, methodErr(CodeUpstream, "journalctl 查询失败")
 	}
 	if errors.Is(ctx.Err(), context.DeadlineExceeded) {
-		return nil, scanned, false, methodErr(CodeUpstream, "journalctl 查询超时")
+		return nil, 0, scanned, false, methodErr(CodeUpstream, "journalctl 查询超时")
 	}
-	return matches, scanned, truncated, nil
+	if total > len(matches) {
+		truncated = true
+	}
+	return matches, total, scanned, truncated, nil
 }

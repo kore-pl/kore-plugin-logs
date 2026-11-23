@@ -96,3 +96,50 @@ func TestSanitizeLine(t *testing.T) {
 		t.Fatalf("sanitizeLine=%q", got)
 	}
 }
+
+// TestParseLineLevel 覆盖行首窗口的级别解析：规范大写词、词边界、否定样例。
+func TestParseLineLevel(t *testing.T) {
+	cases := []struct {
+		line string
+		want string
+	}{
+		{"2026-11-23T10:00:00Z ERROR boom", "error"},
+		{"2026-11-23 10:00:00 [ERROR] boom", "error"},
+		{"2026-11-23 10:00:00 WARN disk 90%", "warn"},
+		{"2026-11-23 10:00:00 WARNING disk 90%", "warn"},
+		{"2026-11-23T10:00:00Z INFO started", "info"},
+		{"2026-11-23 10:00:00 DEBUG trace x=1", "debug"},
+		{"Nov 23 10:17:01 host CRON[123]: (root) CMD", ""},
+		{"2026-11-23 10:00:00 INFORMATIONAL msg", ""},
+		{"2026-11-23 10:00:00 ERRNO 12 happened", ""},
+		{"2026-11-23 10:00:00 perror failed", ""},
+		{"2026-11-23 10:00:00 error lowercase ignored", ""},
+		{"error beyond window should be ignored: " + strings.Repeat("x", 64) + " ERROR", ""},
+	}
+	for _, tc := range cases {
+		if got := parseLineLevel([]byte(tc.line)); got != tc.want {
+			t.Fatalf("parseLineLevel(%q)=%q，期望 %q", tc.line, got, tc.want)
+		}
+	}
+}
+
+// TestParseLineTimeShortISO 覆盖 journalctl short-iso 的 +0800 无冒号偏移格式。
+func TestParseLineTimeShortISO(t *testing.T) {
+	ts, ok := parseLineTime([]byte("2026-11-23T10:17:01+0800 host sshd[1]: accept"))
+	if !ok {
+		t.Fatalf("short-iso 时间解析失败")
+	}
+	if got := ts.Format("2006-01-02T15:04:05Z07:00"); got != "2026-11-23T10:17:01+08:00" {
+		t.Fatalf("time=%q，期望 2026-11-23T10:17:01+08:00", got)
+	}
+}
+
+// TestLineTimeText 覆盖规范化输出与解析失败的空串。
+func TestLineTimeText(t *testing.T) {
+	if got := lineTimeText([]byte("2026-11-22T10:00:00Z INFO ok")); got != "2026-11-22T10:00:00Z" {
+		t.Fatalf("time=%q，期望 RFC3339 规范形", got)
+	}
+	if got := lineTimeText([]byte("no timestamp here")); got != "" {
+		t.Fatalf("time=%q，期望空串", got)
+	}
+}
