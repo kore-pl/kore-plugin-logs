@@ -7,6 +7,7 @@ import (
 	"os"
 	"path/filepath"
 	"sort"
+	"strconv"
 	"strings"
 	"time"
 )
@@ -129,7 +130,18 @@ type CleanResult struct {
 	QuarantineDir   string           `json:"quarantine_dir"`
 	QuarantineBytes int64            `json:"quarantine_bytes"`
 	Evicted         []string         `json:"evicted"`
-	Note            string           `json:"note,omitempty"`
+	// Partial=true 表示本次清理只成功了一部分：Moved 是已如实移入回收区的文件，
+	// Failed 列未处理的文件与原因；剩下的原文件保持原位，可重试。
+	Partial bool           `json:"partial"`
+	Failed  []CleanFailure `json:"failed"`
+	Note    string         `json:"note,omitempty"`
+}
+
+// CleanFailure 是单个来源/文件未能移入回收区的原因（外部可观察，不吞错）。
+type CleanFailure struct {
+	Source string `json:"source"`
+	File   string `json:"file,omitempty"`
+	Reason string `json:"reason"`
 }
 
 // RestoreRequest / RestoreResult 是 logs.clean.restore：把回收区文件移回原目录。
@@ -316,18 +328,21 @@ func (r *Registry) Clean(req CleanRequest) (*CleanResult, *FaultError) {
 	}
 	result := &CleanResult{
 		DryRun: req.DryRun, Candidates: make([]CleanCandidate, 0), Moved: make([]string, 0),
-		Evicted: make([]string, 0), QuarantineDir: filepath.Join(stateDir, "quarantine"),
+		Evicted: make([]string, 0), Failed: make([]CleanFailure, 0),
+		QuarantineDir: filepath.Join(stateDir, "quarantine"),
 	}
 	now := time.Now()
 	for _, name := range targets {
 		entry := r.entries[name]
 		realDir, base, derr := r.secureSourceDir(entry)
 		if derr != nil {
-			return nil, derr
+			result.Failed = append(result.Failed, CleanFailure{Source: name, Reason: derr.Message})
+			continue
 		}
 		files, perr := listSourceFiles(realDir, base)
 		if perr != nil {
-			return nil, perr
+			result.Failed = append(result.Failed, CleanFailure{Source: name, Reason: perr.Message})
+			continue
 		}
 		candidates := planClean(files, base, policyFor(policies, name), now)
 		for _, cand := range candidates {
@@ -337,11 +352,17 @@ func (r *Registry) Clean(req CleanRequest) (*CleanResult, *FaultError) {
 		if req.DryRun || len(candidates) == 0 {
 			continue
 		}
-		moved, merr := moveToQuarantine(stateDir, name, realDir, candidates)
-		if merr != nil {
-			return nil, merr
-		}
+		moved, failed := moveToQuarantine(stateDir, name, realDir, candidates)
 		result.Moved = append(result.Moved, moved...)
+		result.Failed = append(result.Failed, failed...)
+	}
+	// 单个来源/文件失败不吞掉全局结果：已移动的如实留在 result.Moved，未移动的原文件保持原位。
+	// 一个都没移成 = 纯失败，按错误返回（此时 result 无有效产出）。
+	if !req.DryRun && len(result.Moved) == 0 && len(result.Failed) > 0 {
+		return nil, methodErr(CodeInternal, "清理未完成: "+failureSummary(result.Failed))
+	}
+	if !req.DryRun {
+		result.Partial = len(result.Failed) > 0
 	}
 	if req.DryRun {
 		result.Note = "dry_run=true 只列出待清理文件，未移动任何文件；确认后传 dry_run=false + confirm=true"
@@ -353,6 +374,11 @@ func (r *Registry) Clean(req CleanRequest) (*CleanResult, *FaultError) {
 	}
 	result.Evicted = evicted
 	result.QuarantineBytes = qbytes
+	if result.Partial {
+		result.Note = "部分成功：已移动 " + strconv.Itoa(len(result.Moved)) + " 个文件到回收区（可 logs.clean.restore 恢复），" +
+			strconv.Itoa(len(result.Failed)) + " 个未处理且保持原位；" + failureSummary(result.Failed)
+		return result, nil
+	}
 	result.Note = "已将待清理文件移入回收区（可 logs.clean.restore 恢复）；活跃文件与白名单外路径未触碰"
 	return result, nil
 }
@@ -512,27 +538,48 @@ func planClean(files []fileEntry, base string, policy RetentionPolicy, now time.
 
 // moveToQuarantine 把候选文件移动到 <state>/quarantine/<source>/；同秒重名追加时间戳后缀，
 // 绝不覆盖已有回收文件，也绝不写回收区之外的路径。
-func moveToQuarantine(stateDir, source, realDir string, candidates []CleanCandidate) ([]string, *FaultError) {
+// 单个文件失败（权限 / 被占用 / 只读目录）不中断整批：已移动的如实返回，失败的原因一并返回，
+// 未移动的原文件保持原位，由调用方在结果里表达「部分成功」。
+func moveToQuarantine(stateDir, source, realDir string, candidates []CleanCandidate) ([]string, []CleanFailure) {
+	moved := make([]string, 0, len(candidates))
+	failed := make([]CleanFailure, 0)
 	qdir := filepath.Join(stateDir, "quarantine", source)
 	if err := os.MkdirAll(qdir, 0o700); err != nil {
-		return nil, methodErr(CodeInternal, "创建回收区失败: "+err.Error())
+		for _, cand := range candidates {
+			failed = append(failed, CleanFailure{Source: source, File: cand.File, Reason: "创建回收区失败: " + err.Error()})
+		}
+		return moved, failed
 	}
-	moved := make([]string, 0, len(candidates))
 	for _, cand := range candidates {
 		src := filepath.Join(realDir, cand.File)
 		if filepath.Dir(src) != realDir {
-			return moved, methodErr(CodeInvalid, "清理目标越出来源目录，已拒绝")
+			failed = append(failed, CleanFailure{Source: source, File: cand.File, Reason: "清理目标越出来源目录，已拒绝"})
+			continue
 		}
 		dst := filepath.Join(qdir, cand.File)
 		if _, err := os.Lstat(dst); err == nil {
 			dst = filepath.Join(qdir, cand.File+"."+time.Now().UTC().Format("20060102T150405Z"))
 		}
 		if err := os.Rename(src, dst); err != nil {
-			return moved, methodErr(CodeInternal, "移动待清理文件失败: "+cand.File)
+			failed = append(failed, CleanFailure{Source: source, File: cand.File, Reason: "移动失败: " + err.Error()})
+			continue
 		}
 		moved = append(moved, cand.File)
 	}
-	return moved, nil
+	return moved, failed
+}
+
+// failureSummary 把失败清单压成一句可观察摘要（数量 + 首个原因），供错误与 note 复用。
+func failureSummary(failed []CleanFailure) string {
+	if len(failed) == 0 {
+		return ""
+	}
+	first := failed[0]
+	target := first.Source
+	if first.File != "" {
+		target += "/" + first.File
+	}
+	return target + ": " + first.Reason
 }
 
 // enforceQuarantineQuota 统计回收区总大小，超限淘汰最旧文件（真正删除），返回淘汰清单与剩余字节。

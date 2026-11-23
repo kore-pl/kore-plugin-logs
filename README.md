@@ -53,7 +53,7 @@ kore 日志查看分析插件（M5 批1 · 生产级）：真实读取日志文�
 | `logs.retention.get` | 无 | `defaults`（30 天 / 1024 MB / 7 份）、`policies{source:{max_age_days,max_size_mb,max_files}}`、`note` |
 | `logs.retention.set` | `source`、`max_age_days?`（0–3650）、`max_size_mb?`（0–1048576）、`max_files?`（0–10000） | `policy`、`saved`；0=不限制；未传维度保持不变；落 `<state>/retention.json`（0600） |
 | `logs.usage` | 无 | 各来源 `active_bytes` / `rotated_bytes` / `total_bytes` / `files` / `oldest_at`、`policy`、`over_policy` / `reasons`；`over_count` |
-| `logs.clean` | `source?`、`dry_run?`（缺省 true）、`confirm?` | `candidates[{source,file,size_bytes,modified_at,reason}]`、`total_bytes`、`moved`、`quarantine_dir` / `quarantine_bytes` / `evicted`、`note`；真实清理须 `dry_run=false`+`confirm=true` |
+| `logs.clean` | `source?`、`dry_run?`（缺省 true）、`confirm?` | `candidates[{source,file,size_bytes,modified_at,reason}]`、`total_bytes`、`moved`、`quarantine_dir` / `quarantine_bytes` / `evicted`、`partial`、`failed[{source,file,reason}]`、`note`；真实清理须 `dry_run=false`+`confirm=true`；单个文件不可移动时已移动的如实列在 `moved`、未移动的保持原位并进 `failed`（`partial=true`），一个都没移成则返回 `E_INTERNAL` |
 | `logs.clean.restore` | `source?` | `restored[]`、`skipped[]`（同名目标已存在则跳过，不覆盖）、`note` |
 
 ### 语义说明

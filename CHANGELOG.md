@@ -5,6 +5,22 @@ All notable changes to this project are documented in this file.
 The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.1.0/),
 and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0.html).
 
+## [0.5.1] - 2026-11-23
+
+### Added
+
+- `tests/fault/clean_test.go`：为 G-20 P0 补 `clean` / `clean.restore` 等方法的故障注入覆盖
+  （G-20，`production` 必须过故障注入测试）。覆盖：清理中途单文件不可移动、全部不可移动、
+  空来源幂等、磁盘满（ENOSPC 语义）、回收区不可创建、restore 目标已存在不覆盖、
+  restore 来源目录不可写、保留策略文件损坏 / 未知字段、策略落盘失败不留半个文件、
+  来源目录不可读时 usage 单条降级、新方法统一磁盘满注入。
+
+### Changed
+
+- `logs.clean` 结果新增 `partial` 与 `failed[{source,file,reason}]`：批量移动按文件继续，
+  已移动的如实列在 `moved`，未移动的原文件保持原位；一个都没移成时返回 `E_INTERNAL`
+  并在 message 中给出首个失败原因。不再在首个失败处丢弃已完成的移动清单。
+
 ## [0.5.0] - 2026-11-23
 
 ### Added
