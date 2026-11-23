@@ -5,6 +5,24 @@ All notable changes to this project are documented in this file.
 The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.1.0/),
 and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0.html).
 
+## [0.5.0] - 2026-11-23
+
+### Added
+
+- `logs.retention.get` / `logs.retention.set`：按来源保存保留策略 `{max_age_days, max_size_mb, max_files}`
+  （0 = 不限制；默认 30 天 / 1024 MB / 7 份），落 `<state>/retention.json`（0600 原子写）；
+  未传维度保持不变；非法值与未登记来源一律 `E_INVALID`。
+- `logs.usage`：各来源占用（活跃文件 + 轮转文件的总字节 / 文件数 / 最旧时间）与生效策略，
+  `over_policy` / `reasons` 给出失控判读（体积 / 份数 / 超龄）。
+- `logs.clean`：按策略清理**轮转文件**——`dry_run=true`（缺省）只返回待清理清单与可释放字节；
+  `dry_run=false` 必须 `confirm=true`。清理不是 `rm`，而是移到 `<state>/quarantine/<source>/`，
+  可 `logs.clean.restore` 恢复（同名目标已存在则跳过）；回收区超 64 MiB 淘汰最旧。
+- `logs.clean.restore`：把回收区文件移回登记来源目录。
+- 安全边界：只处理登记来源真实目录内、属于该来源的常规文件（`<base>.*`）；符号链接 / 目录 /
+  白名单外路径不进入候选；**当前活跃文件永不清除**（正在 follow 的正是活跃文件，跟随不受影响）。
+- capability：`retention.get` / `usage` = `system:read`；`retention.set` / `clean` / `clean.restore`
+  = `system:admin`。
+
 ## [0.4.2] - 2026-11-23
 
 ### Added

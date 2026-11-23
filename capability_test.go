@@ -25,16 +25,21 @@ var privilegedCaps = map[string]bool{
 
 // expectedMethodCaps 是本仓对外声明的方法级能力表（表驱动，改方法必须同步改这里）。
 var expectedMethodCaps = map[string]string{
-	"logs.sources":    "system:read",
-	"logs.tail":       "system:read",
-	"logs.search":     "system:read",
-	"logs.stats":      "system:read",
-	"logs.follow":     "system:read",
-	"logs.download":   "system:read",
-	"logs.rotate":     "system:admin",
-	"logs.aggregate":  "system:read",
-	"logs.config.get": "system:read",
-	"logs.config.set": "system:admin",
+	"logs.sources":       "system:read",
+	"logs.tail":          "system:read",
+	"logs.search":        "system:read",
+	"logs.stats":         "system:read",
+	"logs.follow":        "system:read",
+	"logs.download":      "system:read",
+	"logs.rotate":        "system:admin",
+	"logs.retention.get": "system:read",
+	"logs.retention.set": "system:admin",
+	"logs.usage":         "system:read",
+	"logs.clean":         "system:admin",
+	"logs.clean.restore": "system:admin",
+	"logs.aggregate":     "system:read",
+	"logs.config.get":    "system:read",
+	"logs.config.set":    "system:admin",
 }
 
 // readInfoManifest 读取 info.json 与 manifest.json（发布件与内嵌清单的版本必须同步）。

@@ -159,6 +159,51 @@ func handleLogsVerb(verb string, params json.RawMessage, cfg *config, logger *sl
 			return nil, fromFault(ferr)
 		}
 		return encodeResult(result, "logs.aggregate")
+	case "retention.get":
+		result, ferr := registry.RetentionGet(logic.RetentionGetRequest{StateDir: cfg.stateDir, Fault: f})
+		if ferr != nil {
+			return nil, fromFault(ferr)
+		}
+		return encodeResult(result, "logs.retention.get")
+	case "retention.set":
+		req, perr := parseRetentionSetParams(params, f, cfg.stateDir)
+		if perr != nil {
+			return nil, perr
+		}
+		req.Debugf = debugLogger(logger)
+		result, ferr := registry.RetentionSet(req)
+		if ferr != nil {
+			return nil, fromFault(ferr)
+		}
+		return encodeResult(result, "logs.retention.set")
+	case "usage":
+		result, ferr := registry.Usage(logic.UsageRequest{StateDir: cfg.stateDir, Fault: f})
+		if ferr != nil {
+			return nil, fromFault(ferr)
+		}
+		return encodeResult(result, "logs.usage")
+	case "clean":
+		req, perr := parseCleanParams(params, f, cfg.stateDir)
+		if perr != nil {
+			return nil, perr
+		}
+		req.Debugf = debugLogger(logger)
+		result, ferr := registry.Clean(req)
+		if ferr != nil {
+			return nil, fromFault(ferr)
+		}
+		return encodeResult(result, "logs.clean")
+	case "clean.restore":
+		req, perr := parseRestoreParams(params, f, cfg.stateDir)
+		if perr != nil {
+			return nil, perr
+		}
+		req.Debugf = debugLogger(logger)
+		result, ferr := registry.Restore(req)
+		if ferr != nil {
+			return nil, fromFault(ferr)
+		}
+		return encodeResult(result, "logs.clean.restore")
 	default:
 		return nil, notFound(verb)
 	}
@@ -206,6 +251,23 @@ type rotateParams struct {
 	Source  string `json:"source"`
 	Confirm *bool  `json:"confirm"`
 	Keep    *int   `json:"keep"`
+}
+
+type retentionSetParams struct {
+	Source     string `json:"source"`
+	MaxAgeDays *int   `json:"max_age_days"`
+	MaxSizeMB  *int   `json:"max_size_mb"`
+	MaxFiles   *int   `json:"max_files"`
+}
+
+type cleanParams struct {
+	Source  string `json:"source"`
+	DryRun  *bool  `json:"dry_run"`
+	Confirm *bool  `json:"confirm"`
+}
+
+type restoreParams struct {
+	Source string `json:"source"`
 }
 
 // aggregateParams 是 logs.aggregate 的入参：sources 为空表示全部来源（按配置顺序）。
@@ -300,6 +362,43 @@ func parseFollowParams(raw json.RawMessage, fault logic.Fault) (logic.FollowRequ
 
 // parseRotateParams 校验入参为 JSON 对象并映射为 logic.RotateRequest。
 // confirm 默认 false：未显式确认的切割请求一律拒绝。
+// parseRetentionSetParams 校验入参并映射为 logic.RetentionSetRequest。
+func parseRetentionSetParams(raw json.RawMessage, fault logic.Fault, stateDir string) (logic.RetentionSetRequest, *pluginapi.Error) {
+	var p retentionSetParams
+	if perr := decodeObject(raw, &p); perr != nil {
+		return logic.RetentionSetRequest{}, perr
+	}
+	return logic.RetentionSetRequest{
+		Source: p.Source, MaxAgeDays: p.MaxAgeDays, MaxSizeMB: p.MaxSizeMB, MaxFiles: p.MaxFiles,
+		StateDir: stateDir, Fault: fault,
+	}, nil
+}
+
+// parseCleanParams 校验入参并映射为 logic.CleanRequest；dry_run 缺省为 true（安全优先）。
+func parseCleanParams(raw json.RawMessage, fault logic.Fault, stateDir string) (logic.CleanRequest, *pluginapi.Error) {
+	var p cleanParams
+	if perr := decodeObject(raw, &p); perr != nil {
+		return logic.CleanRequest{}, perr
+	}
+	req := logic.CleanRequest{Source: p.Source, DryRun: true, StateDir: stateDir, Fault: fault}
+	if p.DryRun != nil {
+		req.DryRun = *p.DryRun
+	}
+	if p.Confirm != nil {
+		req.Confirm = *p.Confirm
+	}
+	return req, nil
+}
+
+// parseRestoreParams 校验入参并映射为 logic.RestoreRequest。
+func parseRestoreParams(raw json.RawMessage, fault logic.Fault, stateDir string) (logic.RestoreRequest, *pluginapi.Error) {
+	var p restoreParams
+	if perr := decodeObject(raw, &p); perr != nil {
+		return logic.RestoreRequest{}, perr
+	}
+	return logic.RestoreRequest{Source: p.Source, StateDir: stateDir, Fault: fault}, nil
+}
+
 func parseRotateParams(raw json.RawMessage, fault logic.Fault) (logic.RotateRequest, *pluginapi.Error) {
 	var p rotateParams
 	if perr := decodeObject(raw, &p); perr != nil {
@@ -414,7 +513,8 @@ func handleConfigSet(params json.RawMessage, cfg *config) (json.RawMessage, *plu
 func businessVerb(method, id string) (string, bool) {
 	verb := strings.TrimPrefix(method, id+".")
 	switch verb {
-	case "sources", "tail", "search", "stats", "download", "follow", "rotate", "aggregate":
+	case "sources", "tail", "search", "stats", "download", "follow", "rotate", "aggregate",
+		"retention.get", "retention.set", "usage", "clean", "clean.restore":
 		return verb, true
 	default:
 		return "", false

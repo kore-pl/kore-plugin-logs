@@ -1,7 +1,7 @@
 {
   "id": "logs",
   "name": "日志查看分析插件",
-  "version": "0.4.2",
+  "version": "0.5.0",
   "protocol": "kore.plugin.v1",
   "lifecycle": "lazy",
   "depth_level": "production",
@@ -20,7 +20,12 @@
     "logs.rotate": "system:admin",
     "logs.aggregate": "system:read",
     "logs.config.get": "system:read",
-    "logs.config.set": "system:admin"
+    "logs.config.set": "system:admin",
+    "logs.retention.get": "system:read",
+    "logs.retention.set": "system:admin",
+    "logs.usage": "system:read",
+    "logs.clean": "system:admin",
+    "logs.clean.restore": "system:admin"
   },
   "triggers": [],
   "requires_kore": ">=0.1.0 <0.2.0",
@@ -34,5 +39,5 @@
   "scenario_tags": [
     "ops"
   ],
-  "size_bytes": 1559769
+  "size_bytes": 1588633
 }

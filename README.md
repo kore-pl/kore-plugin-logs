@@ -50,6 +50,11 @@ kore 日志查看分析插件（M5 批1 · 生产级）：真实读取日志文�
 | `logs.aggregate` | `sources?`（为空=全部，顺序同配置）、`keyword?`、`since?`（RFC3339）、`limit?`（全局上限，默认 100，1–500） | `sources[]`、`groups[{source,type,file,count,truncated,error?,entries[{source,text,time,level,truncated}]}]`、`count`、`truncated`、`errors` |
 | `logs.rotate` | `source`、`confirm`（**必须 true**）、`keep?`（默认 5，1–100） | `rotated_to`、`size_bytes`、`kept`、`removed[]`、`note`（rename 语义：写旧 inode 的进程需重载） |
 | `kore.ping` / `kore.shutdown` / `kore.reload` | — | 协议标准方法 |
+| `logs.retention.get` | 无 | `defaults`（30 天 / 1024 MB / 7 份）、`policies{source:{max_age_days,max_size_mb,max_files}}`、`note` |
+| `logs.retention.set` | `source`、`max_age_days?`（0–3650）、`max_size_mb?`（0–1048576）、`max_files?`（0–10000） | `policy`、`saved`；0=不限制；未传维度保持不变；落 `<state>/retention.json`（0600） |
+| `logs.usage` | 无 | 各来源 `active_bytes` / `rotated_bytes` / `total_bytes` / `files` / `oldest_at`、`policy`、`over_policy` / `reasons`；`over_count` |
+| `logs.clean` | `source?`、`dry_run?`（缺省 true）、`confirm?` | `candidates[{source,file,size_bytes,modified_at,reason}]`、`total_bytes`、`moved`、`quarantine_dir` / `quarantine_bytes` / `evicted`、`note`；真实清理须 `dry_run=false`+`confirm=true` |
+| `logs.clean.restore` | `source?` | `restored[]`、`skipped[]`（同名目标已存在则跳过，不覆盖）、`note` |
 
 ### 语义说明
 
