@@ -13,6 +13,9 @@ import (
 // methodActionPattern 与内核 method_capabilities 校验用的动作段正则一致。
 var methodActionPattern = regexp.MustCompile(`^[a-z][a-zA-Z0-9]*(\.[a-z][a-zA-Z0-9]*)*$`)
 
+// semverPattern 与内核 manifest 校验用的版本正则同口径（测试不锁死具体版本号）。
+var semverPattern = regexp.MustCompile(`^[0-9]+\.[0-9]+\.[0-9]+$`)
+
 // privilegedCaps 是协议允许出现在方法级能力表里的 6 项宿主能力。
 var privilegedCaps = map[string]bool{
 	"system:read": true, "system:admin": true,
@@ -64,8 +67,8 @@ func TestMethodCapabilitiesDeclared(t *testing.T) {
 	if err := json.Unmarshal(info["id"], &id); err != nil || id != "logs" {
 		t.Fatalf("id=%q err=%v，期望 logs", id, err)
 	}
-	if err := json.Unmarshal(info["version"], &version); err != nil || version != "0.4.0" {
-		t.Fatalf("version=%q err=%v，期望 0.4.0", version, err)
+	if err := json.Unmarshal(info["version"], &version); err != nil || !semverPattern.MatchString(version) {
+		t.Fatalf("version=%q err=%v，期望 MAJOR.MINOR.PATCH", version, err)
 	}
 	if err := json.Unmarshal(info["requires_kore"], &requiresKore); err != nil || requiresKore == "" {
 		t.Fatalf("requires_kore 缺失: %v", err)

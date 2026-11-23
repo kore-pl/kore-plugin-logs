@@ -1,12 +1,15 @@
 {
   "id": "logs",
   "name": "日志查看分析插件",
-  "version": "0.4.0",
+  "version": "0.4.1",
   "protocol": "kore.plugin.v1",
   "lifecycle": "lazy",
   "depth_level": "production",
   "entry": "bin/logs",
-  "capabilities": ["system:read"],
+  "capabilities": [
+    "system:read",
+    "system:admin"
+  ],
   "method_capabilities": {
     "logs.sources": "system:read",
     "logs.tail": "system:read",
@@ -20,9 +23,15 @@
   },
   "triggers": [],
   "requires_kore": ">=0.1.0 <0.2.0",
-  "resources": {"memory_mb": 6, "cpu_quota": "20%", "pids_max": 32},
+  "resources": {
+    "memory_mb": 6,
+    "cpu_quota": "20%",
+    "pids_max": 32
+  },
   "depends_on": [],
   "conflicts": [],
-  "scenario_tags": ["ops"],
-  "size_bytes": 1556376
+  "scenario_tags": [
+    "ops"
+  ],
+  "size_bytes": 1556412
 }

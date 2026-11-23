@@ -5,6 +5,14 @@ All notable changes to this project are documented in this file.
 The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.1.0/),
 and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0.html).
 
+## [0.4.1] - 2026-11-23
+
+### Fixed
+
+- 插件级 `capabilities` 补 `system:admin`（原仅 `system:read`）：方法级已含 `rotate` / `config.set`
+  需要 `system:admin`，按 `pluginapitest` 规则「方法级不得强于插件级（只收窄、不放大）」，
+  原声明会误导启用确认的能力范围；方法级 `method_capabilities` 不变，调用契约不变。
+
 ## [0.4.0] - 2026-11-23
 
 ### Added
