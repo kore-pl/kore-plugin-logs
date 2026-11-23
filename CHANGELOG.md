@@ -5,6 +5,15 @@ All notable changes to this project are documented in this file.
 The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.1.0/),
 and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0.html).
 
+## [0.4.2] - 2026-11-23
+
+### Added
+
+- `logs.aggregate`：跨多个已登记来源的统一检索（`sources?` 空表示全部、`keyword?`、`since?`、`limit?` 全局上限），按来源分组返回命中，每条带 `source` 归属；复用 `logs.tail` 的分块读取与 keyword/since 过滤，只读 `system:read`，无 ticker / 无联网
+- 单来源读取失败不拖垮整次聚合：该组带 `error` 字段并在 `errors` 计数中体现；全局额度耗尽后其余来源保留空分组并置 `truncated`
+- test: 多源聚合/分组归属/limit 截断/显式 sources 去重与过滤/非法参数（未登记来源、limit、since、keyword）
+- `method_capabilities` 增 `logs.aggregate: system:read`（10 条）；版本 0.4.1 → 0.4.2
+
 ## [0.4.1] - 2026-11-23
 
 ### Fixed

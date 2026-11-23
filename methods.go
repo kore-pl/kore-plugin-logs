@@ -148,6 +148,17 @@ func handleLogsVerb(verb string, params json.RawMessage, cfg *config, logger *sl
 			return nil, fromFault(ferr)
 		}
 		return encodeResult(result, "logs.rotate")
+	case "aggregate":
+		req, perr := parseAggregateParams(params, f)
+		if perr != nil {
+			return nil, perr
+		}
+		req.Debugf = debugLogger(logger)
+		result, ferr := registry.Aggregate(req)
+		if ferr != nil {
+			return nil, fromFault(ferr)
+		}
+		return encodeResult(result, "logs.aggregate")
 	default:
 		return nil, notFound(verb)
 	}
@@ -195,6 +206,14 @@ type rotateParams struct {
 	Source  string `json:"source"`
 	Confirm *bool  `json:"confirm"`
 	Keep    *int   `json:"keep"`
+}
+
+// aggregateParams 是 logs.aggregate 的入参：sources 为空表示全部来源（按配置顺序）。
+type aggregateParams struct {
+	Sources []string `json:"sources"`
+	Keyword string   `json:"keyword"`
+	Since   string   `json:"since"`
+	Limit   *int     `json:"limit"`
 }
 
 // parseTailParams 校验入参为 JSON 对象并映射为 logic.TailRequest。
@@ -296,6 +315,19 @@ func parseRotateParams(raw json.RawMessage, fault logic.Fault) (logic.RotateRequ
 	return req, nil
 }
 
+// parseAggregateParams 校验入参为 JSON 对象并映射为 logic.AggregateRequest。
+func parseAggregateParams(raw json.RawMessage, fault logic.Fault) (logic.AggregateRequest, *pluginapi.Error) {
+	var p aggregateParams
+	if perr := decodeObject(raw, &p); perr != nil {
+		return logic.AggregateRequest{}, perr
+	}
+	req := logic.AggregateRequest{Sources: p.Sources, Keyword: p.Keyword, Since: p.Since, Fault: fault}
+	if p.Limit != nil {
+		req.Limit = *p.Limit
+	}
+	return req, nil
+}
+
 // debugLogger 把 slog 包装成 logic.Debugf 的格式化签名（slog 不会对首参做格式化）。
 func debugLogger(logger *slog.Logger) logic.Debugf {
 	return func(format string, args ...any) {
@@ -382,7 +414,7 @@ func handleConfigSet(params json.RawMessage, cfg *config) (json.RawMessage, *plu
 func businessVerb(method, id string) (string, bool) {
 	verb := strings.TrimPrefix(method, id+".")
 	switch verb {
-	case "sources", "tail", "search", "stats", "download", "follow", "rotate":
+	case "sources", "tail", "search", "stats", "download", "follow", "rotate", "aggregate":
 		return verb, true
 	default:
 		return "", false

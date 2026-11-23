@@ -32,6 +32,7 @@ var expectedMethodCaps = map[string]string{
 	"logs.follow":     "system:read",
 	"logs.download":   "system:read",
 	"logs.rotate":     "system:admin",
+	"logs.aggregate":  "system:read",
 	"logs.config.get": "system:read",
 	"logs.config.set": "system:admin",
 }

@@ -47,6 +47,7 @@ kore 日志查看分析插件（M5 批1 · 生产级）：真实读取日志文�
 | `logs.stats` | `source` | `path`（`来源名/文件名`）、`size_bytes`、`lines`（>64 MiB 为 `null`）、`modified_at`、`readable`、`note` |
 | `logs.download` | `source?` / `lines?`（默认 1000，1–10000）/ `from_line?` + `to_line?`（行区间）；或 `id` + `offset?` + `limit?`（默认 1 MiB，≤4 MiB） | `path` / `filename` / `id` / `size_bytes` / `lines` / `data_base64`、`offset` / `next_offset` / `eof` / `chunk_bytes` / `max_chunk_bytes`、`truncated` |
 | `logs.follow` | `source`、`cursor?`、`max_lines?`（默认 200，1–500）、`max_bytes?`（默认 1 MiB，≤4 MiB）、`keyword?` | `cursor`、`entries[]`、`count`、`eof`、`reset`、`position`、`scanned_bytes`、`truncated`、`line_truncated` |
+| `logs.aggregate` | `sources?`（为空=全部，顺序同配置）、`keyword?`、`since?`（RFC3339）、`limit?`（全局上限，默认 100，1–500） | `sources[]`、`groups[{source,type,file,count,truncated,error?,entries[{source,text,time,level,truncated}]}]`、`count`、`truncated`、`errors` |
 | `logs.rotate` | `source`、`confirm`（**必须 true**）、`keep?`（默认 5，1–100） | `rotated_to`、`size_bytes`、`kept`、`removed[]`、`note`（rename 语义：写旧 inode 的进程需重载） |
 | `kore.ping` / `kore.shutdown` / `kore.reload` | — | 协议标准方法 |
 
