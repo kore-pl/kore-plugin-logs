@@ -5,6 +5,22 @@ All notable changes to this project are documented in this file.
 The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.1.0/),
 and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0.html).
 
+## [0.5.2] - 2026-11-24
+
+### Fixed
+
+- 修复 `logs.retention.set` 并发丢更新：`<state>/retention.json` 的「读-改-写」改为
+  **state 目录级 flock 串行化**（跨进程 + 跨 goroutine，等待上限 5s），临时文件改用
+  **唯一名** `retention.json.tmp-*`（`os.CreateTemp` + fsync + rename，失败清理）。
+  修复前 4 来源并发写实测只落 2/4，并报
+  `E_INTERNAL: rename .../retention.json.tmp ...: no such file or directory`。
+- `logs.download` 导出落盘同样改用唯一临时名（`<name>.tmp-*`），消除同目标并发导出的固定 `.tmp` 踩踏。
+
+### Added
+
+- `tests/boundary` 新增 `TestBoundaryConcurrentRetentionSet`：4 来源 6 轮并发写，
+  断言策略条数 4/4、每条内容与来源严格对应无串扰、state 目录无 `.tmp` 残留，`-race` 通过。
+
 ## [0.5.1] - 2026-11-23
 
 ### Added
