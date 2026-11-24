@@ -1,7 +1,7 @@
 {
   "id": "logs",
   "name": "日志查看分析插件",
-  "version": "0.5.3",
+  "version": "0.5.4",
   "protocol": "kore.plugin.v1",
   "lifecycle": "lazy",
   "depth_level": "production",
@@ -40,5 +40,5 @@
   "scenario_tags": [
     "ops"
   ],
-  "size_bytes": 1601705
+  "size_bytes": 1601926
 }

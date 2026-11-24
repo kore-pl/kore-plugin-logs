@@ -5,6 +5,18 @@ All notable changes to this project are documented in this file.
 The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.1.0/),
 and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0.html).
 
+## [0.5.4] - 2026-11-24
+
+### Fixed
+
+- 修复同秒并发导出同名日志互相覆盖（后写覆盖前写）：`logs.download` 的导出目标名
+  原为「`Lstat` 判空 → 返回共享路径」，各并发调用写唯一临时文件后 `rename` 到同一目标，
+  后写者覆盖先写者。现改为 `O_WRONLY|O_CREATE|O_EXCL` **原子占名**（冲突换 `-1..-100`
+  后缀重试，超限返回结构化错误），把「判唯一 + 占名」合成一次 syscall；
+  占位 fd 随即关闭，内容仍走唯一临时文件 + fsync + rename 原子落盘，失败清理占位。
+  新增边界用例 `tests/boundary/export_concurrency_test.go`：16 路 barrier 同时导出同秒同名、
+  各自内容不同，断言文件名唯一且 16 份内容零丢失（修复前 5/5 复现覆盖，修复后 10/10 通过）。
+
 ## [0.5.3] - 2026-11-24
 
 ### Added

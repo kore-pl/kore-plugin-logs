@@ -88,8 +88,12 @@ func (r *Registry) Download(req DownloadRequest) (*DownloadResult, *FaultError) 
 	if err := mkdirPrivate(dir); err != nil {
 		return nil, methodErr(CodeInternal, "创建导出目录失败: "+err.Error())
 	}
-	path, filename := uniqueExportPath(dir, entry.spec.Name)
+	path, filename, reservErr := reserveExportPath(dir, entry.spec.Name)
+	if reservErr != nil {
+		return nil, methodErr(CodeInternal, "占用导出路径失败: "+reservErr.Error())
+	}
 	if err := writeFilePrivate(path, content); err != nil {
+		_ = os.Remove(path) // 清理 0 字节占位文件，失败不留半截导出
 		return nil, methodErr(CodeInternal, "写入导出文件失败: "+err.Error())
 	}
 	// 写入时判断（不依赖任何定时器）：导出是中间产物，按份数 + 7 天自清理，
@@ -354,20 +358,32 @@ func validateExportID(id string) *FaultError {
 	return nil
 }
 
-// uniqueExportPath 在导出目录内生成不冲突的 <source>-<UTC时间戳>.log 路径。
-func uniqueExportPath(dir, source string) (path, filename string) {
+// reserveExportPath 在导出目录内原子占用一个唯一的 <source>-<UTC时间戳>(-N).log 路径。
+//
+// 不能用「Lstat 判空 → 返回路径」的 check-then-act：两个并发导出同秒会拿到同一
+// filename，各写唯一临时文件后 rename 到同一目标，后写覆盖前写（2026-11-24 R6-2）。
+// 这里把「判不存在 + 占名」合成一次 O_EXCL 创建：拿到 fd 即独占该文件名；随后
+// close(fd) 保留 0 字节占位文件，writeFilePrivate 再原子 rename 覆盖写入最终内容。
+// EEXIST 换 -1..-100 后缀重试，超限返回错误（绝不死循环、绝不覆盖已有文件）。
+func reserveExportPath(dir, source string) (path, filename string, err error) {
 	stamp := time.Now().UTC().Format("20060102T150405Z")
 	base := safeExportName(source) + "-" + stamp
 	filename = base + ".log"
 	path = filepath.Join(dir, filename)
 	for i := 1; i <= 100; i++ {
-		if _, err := os.Lstat(path); errors.Is(err, iofs.ErrNotExist) {
-			return path, filename
+		// O_EXCL 原子占名：文件已存在则 EEXIST，不存在则本次调用独占创建。
+		file, oerr := os.OpenFile(path, os.O_WRONLY|os.O_CREATE|os.O_EXCL, 0o600)
+		if oerr == nil {
+			_ = file.Close() // 占位文件保留，内容由 writeFilePrivate 原子写入
+			return path, filename, nil
+		}
+		if !errors.Is(oerr, iofs.ErrExist) {
+			return "", "", oerr
 		}
 		filename = fmt.Sprintf("%s-%d.log", base, i)
 		path = filepath.Join(dir, filename)
 	}
-	return path, filename
+	return "", "", errors.New("同一秒内导出冲突过多（>100），已拒绝")
 }
 
 // joinNote 拼接截断说明（空串时直接返回新说明）。
