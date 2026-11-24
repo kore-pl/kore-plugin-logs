@@ -12,15 +12,32 @@ import (
 	"time"
 )
 
-// 保留策略默认值与边界（0 表示该维度不限制；clean/usage 都按同一套判据）。
+// 保留策略默认值与边界（0 表示该维度不限制；clean/usage/maintain 都按同一套判据）。
+//
+// 默认值是**产品预设**而不是"未配置"：装完插件不调 retention.set 就已经生效
+// （G-19 之外的产品原则①：预设优先、自定义兜底）。
+//
+// 依据（对标 logrotate / 宝塔 / 1Panel）：
+//   - 天数 30：宝塔站点日志默认保留 30 天，是中文面板用户最熟悉的"历史窗口"；
+//   - 份数 30：与按天切割对齐（30 天 ≈ 30 份），天数与份数互为兜底；
+//   - 总量 1024 MiB：单来源上限，避免"份数没超但总量失控"；
+//   - 切割阈值 100 MiB：1Panel 的 logrotate 模板 `maxsize 100M`，logrotate 生态常用值。
 const (
 	DefaultRetentionDays   = 30
 	DefaultRetentionSizeMB = 1024
-	DefaultRetentionFiles  = 7
+	DefaultRetentionFiles  = 30
 	MaxRetentionDays       = 3650
 	MaxRetentionSizeMB     = 1048576
 	MaxRetentionFiles      = 10000
 )
+
+// defaultRetentionPolicy 返回出厂预设（自动切割 + 自动清理都基于它）。
+func defaultRetentionPolicy() RetentionPolicy {
+	return RetentionPolicy{
+		MaxAgeDays: DefaultRetentionDays, MaxSizeMB: DefaultRetentionSizeMB,
+		MaxFiles: DefaultRetentionFiles, RotateSizeMB: DefaultRotateSizeMB,
+	}
+}
 
 // quarantineQuotaBytes 是插件回收区总大小上限：超限淘汰最旧文件（真正删除，只限回收区内）。
 // 声明为变量便于测试注入更小上限，生产默认 64 MiB。
@@ -32,11 +49,16 @@ const retentionFileName = "retention.json"
 // retentionLockFileName 是保留策略「读-改-写」的 state 目录级锁文件（0600，常驻，不是临时文件）。
 const retentionLockFileName = ".retention.lock"
 
-// RetentionPolicy 是单来源保留策略；0 表示该维度不限制。
+// RetentionPolicy 是单来源保留策略；MaxAgeDays / MaxSizeMB / MaxFiles 的 0 表示该维度不限制。
+//
+// RotateSizeMB 是**切割**阈值（单文件超过即切一份），默认 100 MiB；
+// 0 视为"用默认值"（不是不限制）——旧版本写下的 retention.json 没有这个键，
+// 读出来是 0，必须回落到默认值，否则升级即静默关闭按大小切割。
 type RetentionPolicy struct {
-	MaxAgeDays int `json:"max_age_days"`
-	MaxSizeMB  int `json:"max_size_mb"`
-	MaxFiles   int `json:"max_files"`
+	MaxAgeDays   int `json:"max_age_days"`
+	MaxSizeMB    int `json:"max_size_mb"`
+	MaxFiles     int `json:"max_files"`
+	RotateSizeMB int `json:"rotate_size_mb"`
 }
 
 // retentionFile 是 retention.json 的显式形状：来源名 → 策略。
@@ -60,13 +82,14 @@ type RetentionGetResult struct {
 // RetentionSetRequest / RetentionSetResult 是 logs.retention.set 的入参与结果。
 // 未传的维度保持不变（指针区分「未传」与「显式 0=不限制」）。
 type RetentionSetRequest struct {
-	Source     string `json:"source"`
-	MaxAgeDays *int   `json:"max_age_days"`
-	MaxSizeMB  *int   `json:"max_size_mb"`
-	MaxFiles   *int   `json:"max_files"`
-	StateDir   string `json:"-"`
-	Fault      Fault  `json:"-"`
-	Debugf     Debugf `json:"-"`
+	Source       string `json:"source"`
+	MaxAgeDays   *int   `json:"max_age_days"`
+	MaxSizeMB    *int   `json:"max_size_mb"`
+	MaxFiles     *int   `json:"max_files"`
+	RotateSizeMB *int   `json:"rotate_size_mb"`
+	StateDir     string `json:"-"`
+	Fault        Fault  `json:"-"`
+	Debugf       Debugf `json:"-"`
 }
 
 type RetentionSetResult struct {
@@ -178,11 +201,11 @@ func (r *Registry) RetentionGet(req RetentionGetRequest) (*RetentionGetResult, *
 		return nil, ferr
 	}
 	result := &RetentionGetResult{
-		Defaults: RetentionPolicy{MaxAgeDays: DefaultRetentionDays, MaxSizeMB: DefaultRetentionSizeMB, MaxFiles: DefaultRetentionFiles},
+		Defaults: defaultRetentionPolicy(),
 		Policies: policies,
 	}
 	if len(policies) == 0 {
-		result.Note = "尚未按来源自定义策略，全部来源使用默认值"
+		result.Note = "出厂预设已生效：按天/按 100 MiB 自动切割，保留 30 天 / 30 份 / 1024 MiB；下面的 policies 只是按来源覆盖"
 	}
 	return result, nil
 }
@@ -214,7 +237,11 @@ func (r *Registry) RetentionSet(req RetentionSetRequest) (*RetentionSetResult, *
 	}
 	policy, ok := policies[entry.spec.Name]
 	if !ok {
-		policy = RetentionPolicy{MaxAgeDays: DefaultRetentionDays, MaxSizeMB: DefaultRetentionSizeMB, MaxFiles: DefaultRetentionFiles}
+		// 新来源从出厂预设起，但 RotateSizeMB 留 0：0 在读取时回落默认 100 MiB，
+		// 这样"未显式设置"在落盘文件里保持可辨识（旧版本文件同样读作 0 → 默认）。
+		policy = RetentionPolicy{
+			MaxAgeDays: DefaultRetentionDays, MaxSizeMB: DefaultRetentionSizeMB, MaxFiles: DefaultRetentionFiles,
+		}
 	}
 	if req.MaxAgeDays != nil {
 		if *req.MaxAgeDays < 0 || *req.MaxAgeDays > MaxRetentionDays {
@@ -233,6 +260,12 @@ func (r *Registry) RetentionSet(req RetentionSetRequest) (*RetentionSetResult, *
 			return nil, methodErr(CodeInvalid, "max_files 必须在 0 到 10000 之间（0=不限制）")
 		}
 		policy.MaxFiles = *req.MaxFiles
+	}
+	if req.RotateSizeMB != nil {
+		if *req.RotateSizeMB < 0 || *req.RotateSizeMB > MaxRotateSizeMB {
+			return nil, methodErr(CodeInvalid, "rotate_size_mb 必须在 0 到 1048576 之间（0=用默认 100 MiB）")
+		}
+		policy.RotateSizeMB = *req.RotateSizeMB
 	}
 	policies[entry.spec.Name] = policy
 	if err := saveRetention(stateDir, policies); err != nil {
@@ -635,12 +668,16 @@ func enforceQuarantineQuota(stateDir string) ([]string, int64, *FaultError) {
 	return evicted, total, nil
 }
 
-// policyFor 取来源策略：已保存的优先，否则默认值。
+// policyFor 取来源策略：已保存的优先，否则出厂预设；RotateSizeMB 缺省（0）回落默认 100 MiB。
 func policyFor(policies map[string]RetentionPolicy, source string) RetentionPolicy {
-	if p, ok := policies[source]; ok {
-		return p
+	p, ok := policies[source]
+	if !ok {
+		return defaultRetentionPolicy()
 	}
-	return RetentionPolicy{MaxAgeDays: DefaultRetentionDays, MaxSizeMB: DefaultRetentionSizeMB, MaxFiles: DefaultRetentionFiles}
+	if p.RotateSizeMB <= 0 {
+		p.RotateSizeMB = DefaultRotateSizeMB
+	}
+	return p
 }
 
 // recordUsageReasons 按策略判读是否失控：体积超限 / 轮转份数超限 / 最旧文件超龄。

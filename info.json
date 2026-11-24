@@ -1,7 +1,7 @@
 {
   "id": "logs",
   "name": "日志查看分析插件",
-  "version": "0.5.2",
+  "version": "0.5.3",
   "protocol": "kore.plugin.v1",
   "lifecycle": "lazy",
   "depth_level": "production",
@@ -11,21 +11,22 @@
     "system:admin"
   ],
   "method_capabilities": {
-    "logs.sources": "system:read",
-    "logs.tail": "system:read",
-    "logs.search": "system:read",
-    "logs.stats": "system:read",
-    "logs.follow": "system:read",
-    "logs.download": "system:read",
-    "logs.rotate": "system:admin",
     "logs.aggregate": "system:read",
+    "logs.clean": "system:admin",
+    "logs.clean.restore": "system:admin",
     "logs.config.get": "system:read",
     "logs.config.set": "system:admin",
+    "logs.download": "system:read",
+    "logs.follow": "system:read",
+    "logs.maintain": "system:admin",
     "logs.retention.get": "system:read",
     "logs.retention.set": "system:admin",
-    "logs.usage": "system:read",
-    "logs.clean": "system:admin",
-    "logs.clean.restore": "system:admin"
+    "logs.rotate": "system:admin",
+    "logs.search": "system:read",
+    "logs.sources": "system:read",
+    "logs.stats": "system:read",
+    "logs.tail": "system:read",
+    "logs.usage": "system:read"
   },
   "triggers": [],
   "requires_kore": ">=0.1.0 <0.2.0",
@@ -39,5 +40,5 @@
   "scenario_tags": [
     "ops"
   ],
-  "size_bytes": 1592747
+  "size_bytes": 1601705
 }

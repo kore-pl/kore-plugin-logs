@@ -92,6 +92,9 @@ func (r *Registry) Download(req DownloadRequest) (*DownloadResult, *FaultError) 
 	if err := writeFilePrivate(path, content); err != nil {
 		return nil, methodErr(CodeInternal, "写入导出文件失败: "+err.Error())
 	}
+	// 写入时判断（不依赖任何定时器）：导出是中间产物，按份数 + 7 天自清理，
+	// 避免"每导出一次就多一个文件"的无界增长。
+	pruneExports(dir)
 	result := &DownloadResult{
 		Path: path, Filename: filename, ID: filename,
 		SizeBytes: int64(len(content)), Lines: written, Truncated: truncatedBySize,

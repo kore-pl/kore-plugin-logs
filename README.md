@@ -50,11 +50,34 @@ kore 日志查看分析插件（M5 批1 · 生产级）：真实读取日志文�
 | `logs.aggregate` | `sources?`（为空=全部，顺序同配置）、`keyword?`、`since?`（RFC3339）、`limit?`（全局上限，默认 100，1–500） | `sources[]`、`groups[{source,type,file,count,truncated,error?,entries[{source,text,time,level,truncated}]}]`、`count`、`truncated`、`errors` |
 | `logs.rotate` | `source`、`confirm`（**必须 true**）、`keep?`（默认 5，1–100） | `rotated_to`、`size_bytes`、`kept`、`removed[]`、`note`（rename 语义：写旧 inode 的进程需重载） |
 | `kore.ping` / `kore.shutdown` / `kore.reload` | — | 协议标准方法 |
-| `logs.retention.get` | 无 | `defaults`（30 天 / 1024 MB / 7 份）、`policies{source:{max_age_days,max_size_mb,max_files}}`、`note` |
+| `logs.retention.get` | 无 | `defaults`（**30 天 / 1024 MB / 30 份 / 切割阈值 100 MiB，出厂即生效**）、`policies{source:{max_age_days,max_size_mb,max_files,rotate_size_mb}}`、`note` |
 | `logs.retention.set` | `source`、`max_age_days?`（0–3650）、`max_size_mb?`（0–1048576）、`max_files?`（0–10000） | `policy`、`saved`；0=不限制；未传维度保持不变；落 `<state>/retention.json`（0600） |
 | `logs.usage` | 无 | 各来源 `active_bytes` / `rotated_bytes` / `total_bytes` / `files` / `oldest_at`、`policy`、`over_policy` / `reasons`；`over_count` |
 | `logs.clean` | `source?`、`dry_run?`（缺省 true）、`confirm?` | `candidates[{source,file,size_bytes,modified_at,reason}]`、`total_bytes`、`moved`、`quarantine_dir` / `quarantine_bytes` / `evicted`、`partial`、`failed[{source,file,reason}]`、`note`；真实清理须 `dry_run=false`+`confirm=true`；单个文件不可移动时已移动的如实列在 `moved`、未移动的保持原位并进 `failed`（`partial=true`），一个都没移成则返回 `E_INTERNAL` |
 | `logs.clean.restore` | `source?` | `restored[]`、`skipped[]`（同名目标已存在则跳过，不覆盖）、`note` |
+| `logs.maintain` | `source?`、`dry_run?`（缺省 false） | `sources[{source,file,rotated_to,rotated_by,trimmed[],skipped}]`、`rotated`、`cleaned`、`policy`、`quarantine_dir`、`note`；**默认维护**：按天/按大小切割（copytruncate，写方无需重载）+ 按策略清理 |
+
+### 默认行为（装完不配就生效）
+
+产品口径：**用户不需要知道 retention 参数，装完即有切割与清理**（AGENTS.md §7 原则①预设优先、自定义兜底）。
+
+| 维度 | 默认值 | 依据 |
+| --- | --- | --- |
+| 按时间切割 | 按天（UTC 日界，每天最多 1 份） | 宝塔/1Panel 的站点日志默认按天切割；日切分是排障时最好对齐的粒度 |
+| 按大小切割 | 单文件 100 MiB（`rotate_size_mb`） | 1Panel logrotate 模板 `maxsize 100M`；单文件过百 MiB 后尾部读取/搜索代价明显上升 |
+| 按时间清理 | 30 天（`max_age_days`） | 宝塔站点日志默认保留 30 天，是中文面板用户最熟悉的历史窗口 |
+| 按份数清理 | 30 份（`max_files`） | 与按天切割对齐：30 天 ≈ 30 份，天数与份数互为兜底 |
+| 按大小清理 | 单来源切割文件合计 1024 MiB（`max_size_mb`） | 防"份数没超但总量失控"；四个来源满配约 4 GiB，仍在磁盘余量可接受范围 |
+
+- 触发方式（**G-19**）：内核 `internal/core/scheduler/` 的内置任务 `builtin-logs-maintain` 每 6h 调一次
+  `logs.maintain`；**插件内部没有任何 ticker / AfterFunc / 周期 goroutine**，不构成第二个周期源。
+- 切割用 **copytruncate**：先复制出 `<base>.<UTC时间戳>`，再原地清空活跃文件——写日志的进程（nginx/mysql/容器）
+  继续写同一个 inode，**不需要重载/重启**；代价是复制与截断之间的极短窗口内写入的字节可能丢失（与 logrotate 的 copytruncate 同源）。
+- 清理是**移入回收区**（`<state>/quarantine/<source>/`），不是 rm：可 `logs.clean.restore` 恢复，回收区总量另有 64 MiB 上限。
+- 活跃文件永不删除；`logs.rotate` 的手动 rename 语义保持不变（需要重载写方时才用它）。
+- 覆盖：`logs.retention.set` 仍然可用（`max_age_days`/`max_size_mb`/`max_files`/`rotate_size_mb`），
+  只覆盖传入的维度；`logs.maintain` 也支持 `dry_run=true` 预演。
+- 插件自己写的导出文件（`<state>/exports/`）在**写入时**自清理：最多保留 50 份、7 天——这条不依赖任何定时器。
 
 ### 语义说明
 
@@ -116,7 +139,7 @@ MIT © pengtang1024
 - **行为准则**：[CODE_OF_CONDUCT.md](CODE_OF_CONDUCT.md)。
 - **兼容性**：`protocol: kore.plugin.v1` · `requires_kore: >=0.1.0 <0.2.0` · `lifecycle: lazy` · 深度等级 `production`。
 - **验证方式**：本地 `make check` 优先（CI 只在 push main / tag / PR / 手动跑；发布前 `make dist` 连跑两次核对 sha 一致）。
-- **发布产物**：`make dist` → `dist/logs-0.5.2.tar.gz` + `.sha256`（位级可复现，连跑两次 sha 相同）。
+- **发布产物**：`make dist` → `dist/logs-0.5.3.tar.gz` + `.sha256`（位级可复现，连跑两次 sha 相同）。
 - **相关仓库**：[索引 kore-plugins](https://github.com/kore-pl/kore-plugins) · [协议文档](https://github.com/kore-pl/kore/blob/main/docs/PLUGIN-PROTOCOL.md) · [SDK 指南](https://github.com/kore-pl/kore/blob/main/docs/PLUGIN-SDK.md)
 
 <!-- oss:end -->

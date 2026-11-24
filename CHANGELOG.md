@@ -5,6 +5,27 @@ All notable changes to this project are documented in this file.
 The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.1.0/),
 and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0.html).
 
+## [0.5.3] - 2026-11-24
+
+### Added
+
+- **日志切割与清理改为默认行为**（装完不配就生效，对应 AGENTS.md §7 原则①）：
+  新增 `logs.maintain`，对登记的文件来源执行「按天/按大小切割 → 按策略清理」。
+  默认值：按天切割、单文件 100 MiB 切割（`rotate_size_mb`）、保留 30 天 / 30 份 / 1024 MiB。
+  依据：宝塔站点日志默认 30 天、1Panel logrotate 模板 `maxsize 100M` + `daily`。
+- 切割采用 **copytruncate**（复制 + 原地清空），写日志的进程无需重载/重启；
+  与手动 `logs.rotate` 的 rename 语义并存（后者仍提示需重载写方）。
+- 触发方式符合 **G-19**：周期由内核 `internal/core/scheduler/` 的内置任务 `builtin-logs-maintain`
+  提供（默认 6h，复用唯一单 ticker），插件内部**不新增任何 ticker/AfterFunc**。
+- `logs.download` 的导出目录改为**写入时自清理**（最多 50 份 / 7 天），消除导出文件的无限累积。
+
+### Changed
+
+- `retention.get` 的 `defaults` 明确为出厂预设（30 天 / 1024 MB / 30 份 / 100 MiB），
+  `note` 改为说明"预设已生效"，不再暗示"未配置"。
+- 默认保留份数 7 → 30，与按天切割对齐（30 天 ≈ 30 份）；`retention.set` 新增 `rotate_size_mb`
+  （0 = 用默认 100 MiB），旧版 `retention.json`（无该键）读出 0 时自动回落默认值。
+
 ## [0.5.2] - 2026-11-24
 
 ### Fixed

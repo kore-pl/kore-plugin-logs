@@ -193,6 +193,17 @@ func handleLogsVerb(verb string, params json.RawMessage, cfg *config, logger *sl
 			return nil, fromFault(ferr)
 		}
 		return encodeResult(result, "logs.clean")
+	case "maintain":
+		req, perr := parseMaintainParams(params, f, cfg.stateDir)
+		if perr != nil {
+			return nil, perr
+		}
+		req.Debugf = debugLogger(logger)
+		result, ferr := registry.Maintain(req)
+		if ferr != nil {
+			return nil, fromFault(ferr)
+		}
+		return encodeResult(result, "logs.maintain")
 	case "clean.restore":
 		req, perr := parseRestoreParams(params, f, cfg.stateDir)
 		if perr != nil {
@@ -254,10 +265,18 @@ type rotateParams struct {
 }
 
 type retentionSetParams struct {
-	Source     string `json:"source"`
-	MaxAgeDays *int   `json:"max_age_days"`
-	MaxSizeMB  *int   `json:"max_size_mb"`
-	MaxFiles   *int   `json:"max_files"`
+	Source       string `json:"source"`
+	MaxAgeDays   *int   `json:"max_age_days"`
+	MaxSizeMB    *int   `json:"max_size_mb"`
+	MaxFiles     *int   `json:"max_files"`
+	RotateSizeMB *int   `json:"rotate_size_mb"`
+}
+
+// maintainParams 是 logs.maintain 的入参：source 可空（=全部文件来源），dry_run 缺省 false
+// （这是默认维护，不是破坏性操作：只做 copytruncate 与移入回收区，可 restore）。
+type maintainParams struct {
+	Source string `json:"source"`
+	DryRun *bool  `json:"dry_run"`
 }
 
 type cleanParams struct {
@@ -370,7 +389,7 @@ func parseRetentionSetParams(raw json.RawMessage, fault logic.Fault, stateDir st
 	}
 	return logic.RetentionSetRequest{
 		Source: p.Source, MaxAgeDays: p.MaxAgeDays, MaxSizeMB: p.MaxSizeMB, MaxFiles: p.MaxFiles,
-		StateDir: stateDir, Fault: fault,
+		RotateSizeMB: p.RotateSizeMB, StateDir: stateDir, Fault: fault,
 	}, nil
 }
 
@@ -397,6 +416,19 @@ func parseRestoreParams(raw json.RawMessage, fault logic.Fault, stateDir string)
 		return logic.RestoreRequest{}, perr
 	}
 	return logic.RestoreRequest{Source: p.Source, StateDir: stateDir, Fault: fault}, nil
+}
+
+// parseMaintainParams 校验入参并映射为 logic.MaintainRequest。
+func parseMaintainParams(raw json.RawMessage, fault logic.Fault, stateDir string) (logic.MaintainRequest, *pluginapi.Error) {
+	var p maintainParams
+	if perr := decodeObject(raw, &p); perr != nil {
+		return logic.MaintainRequest{}, perr
+	}
+	req := logic.MaintainRequest{Source: p.Source, StateDir: stateDir, Fault: fault}
+	if p.DryRun != nil {
+		req.DryRun = *p.DryRun
+	}
+	return req, nil
 }
 
 func parseRotateParams(raw json.RawMessage, fault logic.Fault) (logic.RotateRequest, *pluginapi.Error) {
@@ -513,7 +545,7 @@ func handleConfigSet(params json.RawMessage, cfg *config) (json.RawMessage, *plu
 func businessVerb(method, id string) (string, bool) {
 	verb := strings.TrimPrefix(method, id+".")
 	switch verb {
-	case "sources", "tail", "search", "stats", "download", "follow", "rotate", "aggregate",
+	case "sources", "tail", "search", "stats", "download", "follow", "rotate", "aggregate", "maintain",
 		"retention.get", "retention.set", "usage", "clean", "clean.restore":
 		return verb, true
 	default:

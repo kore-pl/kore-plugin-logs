@@ -38,6 +38,7 @@ var expectedMethodCaps = map[string]string{
 	"logs.clean":         "system:admin",
 	"logs.clean.restore": "system:admin",
 	"logs.aggregate":     "system:read",
+	"logs.maintain":      "system:admin",
 	"logs.config.get":    "system:read",
 	"logs.config.set":    "system:admin",
 }
