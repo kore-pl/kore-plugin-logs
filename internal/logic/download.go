@@ -392,22 +392,32 @@ func mkdirPrivate(dir string) error {
 	return os.MkdirAll(dir, 0o700)
 }
 
-// writeFilePrivate 以 0600 原子写目标文件：先写同目录临时文件再 rename，
-// 中途失败不留下半截导出文件。
+// writeFilePrivate 以 0600 原子写目标文件：先写同目录唯一临时文件再 rename，
+// 中途失败不留下半截导出文件。临时名必须唯一（固定 <path>.tmp 会让同目标并发导出互相踩踏）。
 func writeFilePrivate(path, content string) error {
-	tmp := path + ".tmp"
-	file, err := os.OpenFile(tmp, os.O_WRONLY|os.O_CREATE|os.O_TRUNC, 0o600)
+	tmp, err := os.CreateTemp(filepath.Dir(path), filepath.Base(path)+".tmp-*")
 	if err != nil {
 		return err
 	}
-	if _, err := file.WriteString(content); err != nil {
-		_ = file.Close()
-		_ = os.Remove(tmp)
+	tmpName := tmp.Name()
+	cleanup := func() { _ = os.Remove(tmpName) }
+	if _, err := tmp.WriteString(content); err != nil {
+		_ = tmp.Close()
+		cleanup()
 		return err
 	}
-	if err := file.Close(); err != nil {
-		_ = os.Remove(tmp)
+	if err := tmp.Sync(); err != nil {
+		_ = tmp.Close()
+		cleanup()
 		return err
 	}
-	return os.Rename(tmp, path)
+	if err := tmp.Close(); err != nil {
+		cleanup()
+		return err
+	}
+	if err := os.Rename(tmpName, path); err != nil {
+		cleanup()
+		return err
+	}
+	return nil
 }

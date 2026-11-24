@@ -29,6 +29,9 @@ var quarantineQuotaBytes int64 = 64 << 20
 // retentionFileName 是保留策略落盘文件名（插件 state 内，形状显式、无 object/any）。
 const retentionFileName = "retention.json"
 
+// retentionLockFileName 是保留策略「读-改-写」的 state 目录级锁文件（0600，常驻，不是临时文件）。
+const retentionLockFileName = ".retention.lock"
+
 // RetentionPolicy 是单来源保留策略；0 表示该维度不限制。
 type RetentionPolicy struct {
 	MaxAgeDays int `json:"max_age_days"`
@@ -197,6 +200,14 @@ func (r *Registry) RetentionSet(req RetentionSetRequest) (*RetentionSetResult, *
 	if stateDir == "" {
 		return nil, methodErr(CodeInvalid, "KORE_STATE_DIR 未设置，无法保存保留策略")
 	}
+	// 读-改-写必须串行化：固定临时名 + 无锁读改写会让并发调用互相踩踏并丢更新。
+	// 锁覆盖 load → 合并 → save 全窗口（同一 state 目录跨进程串行）。
+	unlock, lerr := lockRetention(stateDir)
+	if lerr != nil {
+		return nil, methodErr(CodeInternal, "获取保留策略写入锁失败: "+lerr.Error())
+	}
+	defer unlock()
+
 	policies, ferr := loadRetention(stateDir)
 	if ferr != nil {
 		return nil, ferr
@@ -672,7 +683,18 @@ func loadRetention(stateDir string) (map[string]RetentionPolicy, *FaultError) {
 	return policies, nil
 }
 
-// saveRetention 0600 原子写 retention.json（临时文件 + rename）。
+// lockRetention 取 state 目录级排他锁：同一 state 目录的保留策略「读-改-写」跨进程串行化。
+// 锁文件常驻（0600），不承载策略内容；等待有上限，不会无限阻塞调用方。
+func lockRetention(stateDir string) (func(), error) {
+	if err := os.MkdirAll(stateDir, 0o700); err != nil {
+		return nil, err
+	}
+	return lockFile(filepath.Join(stateDir, retentionLockFileName))
+}
+
+// saveRetention 0600 原子写 retention.json（唯一临时名 + rename）。
+// 临时名必须唯一：固定名会让并发写互相踩踏——A 的 rename 先把 tmp 挪走，
+// B 的 rename 随即 ENOENT（这就是 retention 并发丢更新的直接原因）。
 func saveRetention(stateDir string, policies map[string]RetentionPolicy) error {
 	if err := os.MkdirAll(stateDir, 0o700); err != nil {
 		return err
@@ -682,9 +704,29 @@ func saveRetention(stateDir string, policies map[string]RetentionPolicy) error {
 		return err
 	}
 	path := filepath.Join(stateDir, retentionFileName)
-	tmp := path + ".tmp"
-	if err := os.WriteFile(tmp, append(raw, '\n'), 0o600); err != nil {
+	tmp, err := os.CreateTemp(stateDir, retentionFileName+".tmp-*")
+	if err != nil {
 		return err
 	}
-	return os.Rename(tmp, path)
+	tmpName := tmp.Name()
+	cleanup := func() { _ = os.Remove(tmpName) }
+	if _, err := tmp.Write(append(raw, '\n')); err != nil {
+		_ = tmp.Close()
+		cleanup()
+		return err
+	}
+	if err := tmp.Sync(); err != nil {
+		_ = tmp.Close()
+		cleanup()
+		return err
+	}
+	if err := tmp.Close(); err != nil {
+		cleanup()
+		return err
+	}
+	if err := os.Rename(tmpName, path); err != nil {
+		cleanup()
+		return err
+	}
+	return nil
 }
