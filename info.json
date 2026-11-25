@@ -1,7 +1,7 @@
 {
   "id": "logs",
   "name": "日志查看分析插件",
-  "version": "0.5.4",
+  "version": "0.5.5",
   "protocol": "kore.plugin.v1",
   "lifecycle": "lazy",
   "depth_level": "production",
