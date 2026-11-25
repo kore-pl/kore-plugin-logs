@@ -1,5 +1,7 @@
 # kore-plugin-logs
 
+语言：[简体中文](docs/DETAIL.md) · [English](docs/DETAIL.en.md) · [Español](docs/DETAIL.es.md) · [Français](docs/DETAIL.fr.md) · [Deutsch](docs/DETAIL.de.md) · [Русский](docs/DETAIL.ru.md) · [Português](docs/DETAIL.pt.md)
+
 kore 日志查看分析插件（M5 批1 · 生产级）：真实读取日志文件与 systemd journal，
 支持来源白名单、尾部读取、全文件分块搜索、统计、分块下载、带游标的增量跟踪与切割。
 
@@ -123,6 +125,11 @@ make dist    # 确定性 tar.gz：固定 mtime/owner/顺序 + gzip -9n + SHA256S
 ## 许可
 
 MIT © pengtang1024
+
+
+## 支持本项目
+
+如果 日志查看分析插件 帮你省了时间，欢迎在 [GitHub](https://github.com/kore-pl/kore-plugin-logs) 点个 ⭐ Star——这是作者继续维护的最大动力。也欢迎提 issue、PR 或参与讨论。
 
 <!-- oss:begin -->
 ## 开源与贡献
