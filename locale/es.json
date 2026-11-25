@@ -1,0 +1,7 @@
+{
+  "meta": {
+    "title": "kore-plugin-logs (plugin de visualización y análisis de registros)",
+    "description": "Lee archivos de registro reales del host y el journal de systemd, con lista blanca de fuentes, lectura de cola, búsqueda por bloques en todo el archivo, estadísticas, descarga por bloques, seguimiento con cursor, agregación multifuente y rotación. Grado de producción. Sin muestra",
+    "detail": "docs/DETAIL.es.md"
+  }
+}

@@ -1,0 +1,7 @@
+{
+  "meta": {
+    "title": "kore-plugin-logs（日志查看分析插件）",
+    "description": "真实读取宿主日志文件与 systemd journal，提供来源白名单、尾部读取、全文件分块搜索、统计、分块下载、带游标的增量跟踪、多来源聚合与日志切割。生产级（depth_level=production）。**不做内存样例、不内置任何日志内容**。 从插件市场安装 `logs`，或通过 `make dist` 产出 `dist/logs-0.5.4.tar.gz` 导入。开发验证：`make check`（gofmt → go vet → go test -timeout 200s），含 boundary / fault / e2e 测试。",
+    "detail": "docs/DETAIL.md"
+  }
+}

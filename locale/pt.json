@@ -1,0 +1,7 @@
+{
+  "meta": {
+    "title": "kore-plugin-logs (plugin de visualização e análise de logs)",
+    "description": "Lê arquivos de log reais do host e o journal do systemd, com lista branca de fontes, leitura de cauda, busca em blocos no arquivo inteiro, estatísticas, download em blocos, acompanhamento por cursor, agregação de várias fontes e rotação. Grau de produção. Sem amostras em memória ",
+    "detail": "docs/DETAIL.pt.md"
+  }
+}

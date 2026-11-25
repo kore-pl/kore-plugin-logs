@@ -1,0 +1,7 @@
+{
+  "meta": {
+    "title": "kore-plugin-logs (Plugin zum Anzeigen und Analysieren von Logs)",
+    "description": "Liest echte Host-Logdateien und das systemd-Journal, mit Quellen-Whitelist, Tail-Lesen, blockweise Suche im gesamten File, Statistiken, blockweisem Download, cursor-basiertem Follow, Aggregation mehrerer Quellen und Log-Rotation. Produktionsreif. Keine In-Memory-Beispiele und kei",
+    "detail": "docs/DETAIL.de.md"
+  }
+}

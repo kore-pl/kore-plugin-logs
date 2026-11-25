@@ -1,0 +1,7 @@
+{
+  "meta": {
+    "title": "kore-plugin-logs (log viewer and analysis plugin)",
+    "description": "Reads real host log files and systemd journal, with source allowlisting, tail reading, chunked full-file search, statistics, chunked download, cursor-based follow, multi-source aggregation and log rotation. Production grade. No in-memory samples and no bundled log content.",
+    "detail": "docs/DETAIL.en.md"
+  }
+}

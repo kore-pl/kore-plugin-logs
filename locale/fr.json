@@ -1,0 +1,7 @@
+{
+  "meta": {
+    "title": "kore-plugin-logs (plugin de consultation et d'analyse des journaux)",
+    "description": "Lit les vrais fichiers de journal de l'hôte et le journal systemd, avec liste blanche de sources, lecture de fin, recherche par blocs sur tout le fichier, statistiques, téléchargement par blocs, suivi par curseur, agrégation multi-sources et rotation. Qualité production. Aucun éc",
+    "detail": "docs/DETAIL.fr.md"
+  }
+}
